@@ -6,6 +6,7 @@ import plotly.express as px
 import psycopg2
 import streamlit.components.v1 as components
 import warnings
+import requests
 
 warnings.filterwarnings("ignore")
 
@@ -413,8 +414,31 @@ elif menu == "📝 Reportes":
             elif sp['Deudareal'] < 0: msg += f"✨ *SALDO A FAVOR: ${abs(sp['Deudareal']):.2f}*"
             else: msg += "✅ *CUENTA LIQUIDADA*"
             
-            st.write("👆 **Toca el ícono en la esquina superior derecha del cuadro para copiar:**")
-            st.code(msg, language="text")
+            st.divider()
+            st.write("📱 **Enviar por WhatsApp Automáticamente**")
+            
+            if st.button("Enviar Cobro al Grupo 🚀", use_container_width=True, type="primary"):
+                with st.spinner("Enviando mensaje al grupo..."):
+                    url = st.secrets["GREEN_API_URL"]
+                    grupo_id = st.secrets["WHATSAPP_GROUP_ID"]
+                    
+                    payload = {
+                        "chatId": f"{grupo_id}@g.us",
+                        "message": msg
+                    }
+                    
+                    try:
+                        respuesta = requests.post(url, json=payload)
+                        if respuesta.status_code == 200:
+                            st.success("✅ ¡Mensaje enviado exitosamente al grupo!")
+                        else:
+                            st.error(f"❌ Error al enviar. Código: {respuesta.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ Ocurrió un error de conexión: {e}")
+                        
+            # Mantenemos el cuadro de texto colapsado por si la API falla
+            with st.expander("Ver texto generado (Respaldo manual)"):
+                st.code(msg, language="text")
 
 # --- 5. GESTIÓN (EDITAR / BORRAR) ---
 elif menu == "🛠️ Gestionar":
