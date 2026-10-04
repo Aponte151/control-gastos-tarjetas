@@ -442,47 +442,70 @@ elif menu == "📝 Reportes":
 
 # --- 5. GESTIÓN (EDITAR / BORRAR) ---
 elif menu == "🛠️ Gestionar":
-    df_del_c = consultar_datos("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.fecha DESC")
+    tipo_gestion = st.radio("¿Qué deseas gestionar?", ["🛒 Compras", "💸 Pagos / Abonos"], horizontal=True)
     
-    if not df_del_c.empty:
-        df_del_c.columns = [col.capitalize() for col in df_del_c.columns]
-        opciones = [f"ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})" for _, r in df_del_c.iterrows()]
-        seleccion_borrar = st.selectbox("Selecciona un movimiento:", opciones)
-        id_seleccionado = seleccion_borrar.split(" | ")[0].replace("ID: ", "")
+    if tipo_gestion == "🛒 Compras":
+        df_del = consultar_datos("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.fecha DESC")
         
-        fila_actual = df_del_c[df_del_c['Id'] == int(id_seleccionado)].iloc[0]
-        
-        t_editar, t_eliminar = st.tabs(["✏️ Editar Datos", "🗑️ Eliminar Registro"])
-        
-        with t_editar:
-            with st.form("form_editar"):
-                st.info("💡 Solo puedes editar nombre y fecha. Para cambiar montos o personas involucradas, es más seguro eliminar el registro y volver a crearlo.")
-                nuevo_concepto = st.text_input("Concepto", value=fila_actual['Concepto'])
-                nueva_fecha = st.date_input("Fecha", pd.to_datetime(fila_actual['Fecha']))
-                
-                if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
+        if not df_del.empty:
+            df_del.columns = [col.capitalize() for col in df_del.columns]
+            opciones = [f"ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})" for _, r in df_del.iterrows()]
+            seleccion = st.selectbox("Selecciona un movimiento:", opciones)
+            id_seleccionado = seleccion.split(" | ")[0].replace("ID: ", "")
+            
+            fila_actual = df_del[df_del['Id'] == int(id_seleccionado)].iloc[0]
+            
+            t_editar, t_eliminar = st.tabs(["✏️ Editar Datos", "🗑️ Eliminar Registro"])
+            
+            with t_editar:
+                with st.form("form_editar"):
+                    st.info("💡 Solo puedes editar nombre y fecha. Para cambiar montos, elimina el registro y vuelve a crearlo.")
+                    nuevo_concepto = st.text_input("Concepto", value=fila_actual['Concepto'])
+                    nueva_fecha = st.date_input("Fecha", pd.to_datetime(fila_actual['Fecha']))
+                    
+                    if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
+                        conn = conectar_bd()
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                        conn.commit()
+                        conn.close()
+                        st.cache_data.clear()
+                        st.session_state.mensaje_exito = "✏️ Registro actualizado."
+                        st.rerun()
+                        
+            with t_eliminar:
+                if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
                     conn = conectar_bd()
                     cursor = conn.cursor()
-                    cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                    cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
                     conn.commit()
                     conn.close()
                     st.cache_data.clear()
-                    st.session_state.mensaje_exito = "✏️ Registro actualizado correctamente."
+                    st.session_state.mensaje_exito = "🗑️️ Compra eliminada."
                     st.rerun()
-                    
-        with t_eliminar:
-            if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
+        else:
+            st.info("📭 Aún no hay compras registradas para gestionar.")
+            
+    else: # Gestión de Pagos / Abonos
+        df_del_p = consultar_datos("SELECT pa.id, pa.fecha, pa.concepto, pa.monto, p.nombre as persona, t.nombre as tarjeta FROM pagos pa JOIN personas p ON pa.persona_id = p.id JOIN tarjetas t ON pa.tarjeta_id = t.id ORDER BY pa.fecha DESC")
+        
+        if not df_del_p.empty:
+            df_del_p.columns = [col.capitalize() for col in df_del_p.columns]
+            opciones_p = [f"ID: {r['Id']} | {r['Fecha']} | {r['Persona']} abonó ${r['Monto']} ({r['Concepto']})" for _, r in df_del_p.iterrows()]
+            seleccion_p = st.selectbox("Selecciona el abono a eliminar:", opciones_p)
+            id_p_seleccionado = seleccion_p.split(" | ")[0].replace("ID: ", "")
+            
+            if st.button("🚨 Eliminar Abono Definitivamente", use_container_width=True, type="primary"):
                 conn = conectar_bd()
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
+                cursor.execute("DELETE FROM pagos WHERE id = %s", (id_p_seleccionado,))
                 conn.commit()
                 conn.close()
                 st.cache_data.clear()
-                st.session_state.mensaje_exito = "🗑️ Compra eliminada de la nube."
+                st.session_state.mensaje_exito = "🗑️ Abono eliminado de la base de datos."
                 st.rerun()
-    else:
-        # AGREGAMOS ESTO PARA QUE NO SE VEA BLANCO
-        st.info("📭 Aún no hay compras registradas para gestionar.")
+        else:
+            st.info("📭 Aún no hay abonos registrados para gestionar.")
 
 # --- 6. AJUSTES ---
 elif menu == "⚙️ Ajustes":
@@ -502,3 +525,21 @@ elif menu == "⚙️ Ajustes":
                 st.cache_data.clear()
                 st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada."
                 st.rerun()
+
+    # NUEVO: Botón de reset de pruebas
+    with st.expander("⚠️ Zona de Peligro (Empezar de 0)", expanded=False):
+        st.warning("Esto borrará permanentemente TODAS las compras y abonos. Las tarjetas y personas se mantendrán.")
+        
+        # Un checkbox de seguridad para evitar clics accidentales
+        seguro = st.checkbox("Entiendo que esto no se puede deshacer")
+        
+        if st.button("🗑️ Reiniciar Historial Financiero", use_container_width=True, type="primary", disabled=not seguro):
+            conn = conectar_bd()
+            cursor = conn.cursor()
+            # TRUNCATE limpia las tablas de transacciones y reinicia los IDs a 1
+            cursor.execute("TRUNCATE TABLE compras, pagos, compra_participantes RESTART IDENTITY CASCADE;")
+            conn.commit()
+            conn.close()
+            st.cache_data.clear()
+            st.session_state.mensaje_exito = "✨ Base de datos reiniciada. ¡Listo para usar en el mundo real!"
+            st.rerun()
