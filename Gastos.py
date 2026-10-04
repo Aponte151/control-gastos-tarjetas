@@ -509,7 +509,19 @@ elif menu == "🛠️ Gestionar":
 
 # --- 6. AJUSTES ---
 elif menu == "⚙️ Ajustes":
-    with st.expander("💳 Añadir Nueva Tarjeta", expanded=True):
+    st.subheader("💳 Tarjetas Registradas")
+    
+    # Consultar y mostrar las tarjetas actuales
+    df_tarjetas = consultar_datos("SELECT id as \"ID\", nombre as \"Tarjeta\", dia_corte as \"Día de Corte\", dia_pago as \"Día de Pago\" FROM tarjetas ORDER BY id ASC")
+    
+    if not df_tarjetas.empty:
+        st.dataframe(df_tarjetas, use_container_width=True, hide_index=True)
+    else:
+        st.info("📭 Aún no hay tarjetas registradas.")
+        
+    st.divider()
+
+    with st.expander("➕ Añadir Nueva Tarjeta", expanded=False):
         with st.form("form_tarjeta", clear_on_submit=True):
             n_t = st.text_input("Nombre de la Tarjeta")
             col_corte, col_pago = st.columns(2)
@@ -526,7 +538,7 @@ elif menu == "⚙️ Ajustes":
                 st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada."
                 st.rerun()
 
-    # NUEVO: Botón de reset de pruebas
+    # Botón de reset de pruebas
     with st.expander("⚠️ Zona de Peligro (Empezar de 0)", expanded=False):
         st.warning("Esto borrará permanentemente TODAS las compras y abonos. Las tarjetas y personas se mantendrán.")
         
