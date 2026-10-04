@@ -161,8 +161,12 @@ if st.session_state.get('cerrar_sidebar', False):
         """
         <script>
             const doc = window.parent.document;
-            const menuBtn = doc.querySelector('[data-testid="baseButton-header"]');
-            if (menuBtn) { menuBtn.click(); }
+            const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+            if (sidebar) {
+                // El botón "X" para cerrar siempre es el primer botón dentro del menú
+                const closeBtn = sidebar.querySelector('button');
+                if (closeBtn) closeBtn.click();
+            }
         </script>
         """, height=0, width=0
     )
