@@ -4,6 +4,7 @@ from datetime import datetime
 import calendar
 import plotly.express as px
 import psycopg2
+import streamlit.components.v1 as components
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -12,10 +13,14 @@ warnings.filterwarnings("ignore")
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(page_title="Gestor de Tarjetas", page_icon="💳", layout="wide")
-# Estilos CSS adicionales para mejorar vista en celular
 st.markdown("""
     <style>
-    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
+    .stMetric { 
+        background-color: var(--secondary-background-color); 
+        padding: 15px; 
+        border-radius: 10px; 
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1); 
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -46,7 +51,7 @@ def verificar_password():
 verificar_password()
 
 # ---------------------------------------------------------
-# CONEXIÓN SUPABASE (POSTGRESQL)
+# CONEXIÓN Y CACHÉ SUPABASE
 # ---------------------------------------------------------
 def conectar_bd():
     return psycopg2.connect(st.secrets["DATABASE_URL"])
@@ -78,6 +83,9 @@ def inicializar_bd():
         );
     """)
     
+    # NUEVO: Agregamos la columna 'concepto' a los pagos (Devoluciones/Reembolsos) si no existe
+    cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS concepto TEXT DEFAULT 'Abono a deuda';")
+    
     usuarios_base = ["Julio", "Karol", "Omar", "Martha"]
     for usr in usuarios_base:
         cursor.execute("INSERT INTO personas (nombre) VALUES (%s) ON CONFLICT (nombre) DO NOTHING;", (usr,))
@@ -86,6 +94,13 @@ def inicializar_bd():
     conn.close()
 
 inicializar_bd()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def consultar_datos(query):
+    conn = conectar_bd()
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
 
 def sumar_meses(fecha_original, meses_a_sumar):
     mes = fecha_original.month - 1 + meses_a_sumar
@@ -98,25 +113,40 @@ def sumar_meses(fecha_original, meses_a_sumar):
 # INTERFAZ PRINCIPAL (MOBILE FIRST)
 # ---------------------------------------------------------
 
-# --- MENÚ LATERAL (SIDEBAR) ---
+if "menu_actual" not in st.session_state:
+    st.session_state.menu_actual = "📊 Dashboard"
+
+def cambiar_menu(nueva_opcion):
+    st.session_state.menu_actual = nueva_opcion
+    st.session_state.cerrar_sidebar = True
+
 with st.sidebar:
     st.title("📱 Menú Principal")
-    # Cambio 3: Navegación tipo App Móvil
-    menu = st.radio("Navegación:", [
-        "📊 Dashboard", 
-        "🛒 Registrar Compra", 
-        "💸 Liquidar Deuda", 
-        "📝 Reportes", 
-        "🗑️ Borrar", 
-        "⚙️ Ajustes"
-    ])
+    st.write("Selecciona una opción:")
+    
+    # NUEVAS OPCIONES INTEGRADAS
+    opciones_menu = ["📊 Dashboard", "📈 Proyecciones", "🛒 Registrar Compra", "💸 Liquidar Deuda", "📝 Reportes", "🛠️ Gestionar", "⚙️ Ajustes"]
+    
+    for opcion in opciones_menu:
+        es_activa = (st.session_state.menu_actual == opcion)
+        st.button(
+            opcion, 
+            use_container_width=True, 
+            type="primary" if es_activa else "secondary",
+            on_click=cambiar_menu, 
+            args=(opcion,),
+            key=f"btn_{opcion}"
+        )
+        
     st.divider()
     st.write("👤 **Sesión Activa**")
-    if st.button("Cerrar Sesión 🚪", use_container_width=True):
+    if st.button("Cerrar Sesión 🚪", use_container_width=True, type="secondary"):
         st.session_state.autenticado = False
+        st.cache_data.clear()
         st.rerun()
 
-# Mensajes de estado globales
+menu = st.session_state.menu_actual
+
 if 'mensaje_exito' in st.session_state:
     st.success(st.session_state.mensaje_exito)
     del st.session_state.mensaje_exito
@@ -126,9 +156,20 @@ if 'mensaje_error' in st.session_state:
 
 st.title(menu)
 
+if st.session_state.get('cerrar_sidebar', False):
+    components.html(
+        """
+        <script>
+            const doc = window.parent.document;
+            const menuBtn = doc.querySelector('[data-testid="baseButton-header"]');
+            if (menuBtn) { menuBtn.click(); }
+        </script>
+        """, height=0, width=0
+    )
+    st.session_state.cerrar_sidebar = False
+
 # --- 1. DASHBOARD ---
 if menu == "📊 Dashboard":
-    # Cambio 1: Filtros ocultables con st.expander para ahorrar espacio en celular
     with st.expander("🔍 Mostrar/Ocultar Filtros de Tiempo", expanded=False):
         c_f1, c_f2 = st.columns(2)
         with c_f1:
@@ -146,50 +187,25 @@ if menu == "📊 Dashboard":
         condicion_c += " AND EXTRACT(DAY FROM c.fecha::DATE) > 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
 
-    conn = conectar_bd()
     query_saldos = f"""
-    WITH base_pt AS (
-        SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta
-        FROM personas p CROSS JOIN tarjetas t
-    ),
-    compras_periodo AS (
-        SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido
-        FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id
-        WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id
-    ),
-    pagos_periodo AS (
-        SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado
-        FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id
-    ),
-    compras_global AS (
-        SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido_global
-        FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id
-        GROUP BY cp.persona_id, c.tarjeta_id
-    ),
-    pagos_global AS (
-        SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado_global
-        FROM pagos pa GROUP BY pa.persona_id, pa.tarjeta_id
-    )
+    WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
+    compras_periodo AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id),
+    pagos_periodo AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id),
+    compras_global AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido_global FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id GROUP BY cp.persona_id, c.tarjeta_id),
+    pagos_global AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado_global FROM pagos pa GROUP BY pa.persona_id, pa.tarjeta_id)
     SELECT b.Persona, b.Tarjeta, 
-           ROUND(COALESCE(cp.consumido, 0)::numeric, 2) AS "Consumo Filtro",
-           ROUND(COALESCE(pp.pagado, 0)::numeric, 2) AS "Pagos Filtro",
-           ROUND((COALESCE(cp.consumido, 0) - COALESCE(pp.pagado, 0))::numeric, 2) AS "Saldo del Filtro",
-           ROUND((COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0))::numeric, 2) AS "Deuda Total (Histórica)"
+           ROUND(COALESCE(cp.consumido, 0)::numeric, 2) AS "Consumo Filtro", ROUND(COALESCE(pp.pagado, 0)::numeric, 2) AS "Pagos Filtro",
+           ROUND((COALESCE(cp.consumido, 0) - COALESCE(pp.pagado, 0))::numeric, 2) AS "Saldo del Filtro", ROUND((COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0))::numeric, 2) AS "Deuda Total (Histórica)"
     FROM base_pt b
-    LEFT JOIN compras_periodo cp ON b.persona_id = cp.persona_id AND b.tarjeta_id = cp.tarjeta_id
-    LEFT JOIN pagos_periodo pp ON b.persona_id = pp.persona_id AND b.tarjeta_id = pp.tarjeta_id
-    LEFT JOIN compras_global cg ON b.persona_id = cg.persona_id AND b.tarjeta_id = cg.tarjeta_id
-    LEFT JOIN pagos_global pg ON b.persona_id = pg.persona_id AND b.tarjeta_id = pg.tarjeta_id
-    WHERE (COALESCE(cp.consumido, 0) > 0 OR COALESCE(pp.pagado, 0) > 0)
-       OR ('{quincena_filtro}' = 'Mes Completo' AND (COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0)) > 0.01)
+    LEFT JOIN compras_periodo cp ON b.persona_id = cp.persona_id AND b.tarjeta_id = cp.tarjeta_id LEFT JOIN pagos_periodo pp ON b.persona_id = pp.persona_id AND b.tarjeta_id = pp.tarjeta_id
+    LEFT JOIN compras_global cg ON b.persona_id = cg.persona_id AND b.tarjeta_id = cg.tarjeta_id LEFT JOIN pagos_global pg ON b.persona_id = pg.persona_id AND b.tarjeta_id = pg.tarjeta_id
+    WHERE (COALESCE(cp.consumido, 0) > 0 OR COALESCE(pp.pagado, 0) > 0) OR ('{quincena_filtro}' = 'Mes Completo' AND (COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0)) > 0.01)
     ORDER BY b.Persona, b.Tarjeta
     """
-    df_saldos = pd.read_sql_query(query_saldos, conn)
-    df_categorias = pd.read_sql_query(f"SELECT categoria, SUM(monto_total) as total FROM compras c WHERE {condicion_c} GROUP BY categoria", conn)
-    conn.close()
+    df_saldos = consultar_datos(query_saldos)
+    df_categorias = consultar_datos(f"SELECT categoria, SUM(monto_total) as total FROM compras c WHERE {condicion_c} GROUP BY categoria")
 
     if not df_saldos.empty:
-        # En móvil las métricas se apilarán solas gracias a st.columns
         c1, c2 = st.columns(2)
         c1.metric("💸 Deuda (Histórica)", f"${df_saldos['Deuda Total (Histórica)'].sum():,.2f}")
         c2.metric("🎯 Saldo del Filtro", f"${df_saldos['Saldo del Filtro'].sum():,.2f}")
@@ -200,7 +216,6 @@ if menu == "📊 Dashboard":
         st.divider()
         
         st.subheader("📋 Detalle de Saldos")
-        # Cambio 2: use_container_width=True para que no desborde en celular
         st.dataframe(df_saldos.style.format({"Consumo Filtro": "${:.2f}", "Pagos Filtro": "${:.2f}", "Saldo del Filtro": "${:.2f}", "Deuda Total (Histórica)": "${:.2f}"}), use_container_width=True, hide_index=True)
             
         st.subheader("🛍️ Gastos por Categoría")
@@ -212,12 +227,35 @@ if menu == "📊 Dashboard":
     else:
         st.info(f"No hay movimientos registrados ni deudas para {quincena_filtro} de {mes_filtro}.")
 
+# --- NUEVO: 1.5 PROYECCIONES ---
+elif menu == "📈 Proyecciones":
+    st.subheader("🔮 Radar de Pagos Futuros (MSI)")
+    mes_actual = datetime.now().strftime("%Y-%m")
+    
+    q_proj = f"""
+        SELECT TO_CHAR(c.fecha::DATE, 'YYYY-MM') AS mes, SUM(cp.monto_asignado) AS total
+        FROM compras c
+        JOIN compra_participantes cp ON c.id = cp.compra_id
+        WHERE TO_CHAR(c.fecha::DATE, 'YYYY-MM') >= '{mes_actual}'
+        GROUP BY TO_CHAR(c.fecha::DATE, 'YYYY-MM')
+        ORDER BY TO_CHAR(c.fecha::DATE, 'YYYY-MM')
+    """
+    df_proj = consultar_datos(q_proj)
+    
+    if not df_proj.empty:
+        st.info("Esta gráfica proyecta todo el dinero que ya debes en los próximos meses a causa de las compras a Meses Sin Intereses (MSI).")
+        fig_proj = px.bar(df_proj, x='mes', y='total', text_auto='.2f', 
+                          labels={'mes': 'Mes del Año', 'total': 'Deuda Comprometida ($)'},
+                          color_discrete_sequence=['#ff4b4b'])
+        fig_proj.update_traces(textfont_size=12, textangle=0, textposition="outside", cliponaxis=False)
+        st.plotly_chart(fig_proj, use_container_width=True)
+    else:
+        st.success("¡Felicidades! No hay compras a Meses Sin Intereses registradas para el futuro.")
+
 # --- 2. COMPRAS ---
 elif menu == "🛒 Registrar Compra":
-    conn = conectar_bd()
-    tarjetas = pd.read_sql_query("SELECT id, nombre FROM tarjetas", conn)
-    personas = pd.read_sql_query("SELECT id, nombre FROM personas", conn)
-    conn.close()
+    tarjetas = consultar_datos("SELECT id, nombre FROM tarjetas")
+    personas = consultar_datos("SELECT id, nombre FROM personas")
 
     if not tarjetas.empty and not personas.empty:
         with st.expander("➕ Completar detalles de compra", expanded=True):
@@ -262,17 +300,16 @@ elif menu == "🛒 Registrar Compra":
                                            (compra_id, p_id, cuota_persona))
                     conn.commit()
                     conn.close()
+                    st.cache_data.clear()
                     st.session_state.mensaje_exito = f"✨ ¡Compra '{concepto}' guardada!"
                     st.rerun()
     else:
         st.warning("⚠️ Primero añade tarjetas y personas en Ajustes.")
 
-# --- 3. PAGOS ---
+# --- 3. PAGOS Y DEVOLUCIONES ---
 elif menu == "💸 Liquidar Deuda":
-    conn = conectar_bd()
-    tarjetas_pago = pd.read_sql_query("SELECT id, nombre FROM tarjetas", conn)
-    personas_pago = pd.read_sql_query("SELECT id, nombre FROM personas", conn)
-    conn.close()
+    tarjetas_pago = consultar_datos("SELECT id, nombre FROM tarjetas")
+    personas_pago = consultar_datos("SELECT id, nombre FROM personas")
 
     if not tarjetas_pago.empty and not personas_pago.empty:
         p_pago = st.selectbox("¿Quién va a pagar?", options=personas_pago["id"], format_func=lambda x: personas_pago.loc[personas_pago["id"]==x, "nombre"].values[0])
@@ -292,24 +329,25 @@ elif menu == "💸 Liquidar Deuda":
         else: 
             st.success("✅ Sin deudas pendientes en esta tarjeta.")
             
-        with st.expander("Detalles del Abono", expanded=True):
+        with st.expander("Detalles del Abono / Devolución", expanded=True):
+            concepto_pago = st.text_input("Concepto (Opcional)", value="Abono a deuda", help="Modifícalo si fue una Devolución, Reembolso, o quieres especificar la quincena.")
             tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
             m_pago = deuda_actual if tipo_pago == "Liquidar deuda completa" else st.number_input("Monto ($)", min_value=0.01, step=50.0, value=float(min(500.0, max(0.01, deuda_actual))))
             f_pago = st.date_input("Fecha del Pago", datetime.today())
         
-        if st.button("Registrar Pago ✅", use_container_width=True):
+        if st.button("Registrar Movimiento ✅", use_container_width=True):
             if m_pago > 0:
                 conn = conectar_bd()
                 cursor = conn.cursor()
-                cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha) VALUES (%s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago)))
+                cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago), concepto_pago))
                 conn.commit()
                 conn.close()
-                st.session_state.mensaje_exito = f"✅ Pago de ${m_pago:,.2f} registrado."
+                st.cache_data.clear() 
+                st.session_state.mensaje_exito = f"✅ Movimiento de ${m_pago:,.2f} registrado."
                 st.rerun()
 
 # --- 4. REPORTES ---
 elif menu == "📝 Reportes":
-    conn = conectar_bd()
     q_det = """
     SELECT 
         TO_CHAR(c.fecha::DATE, 'YYYY-MM') AS mes,
@@ -320,11 +358,11 @@ elif menu == "📝 Reportes":
     SELECT 
         TO_CHAR(pa.fecha::DATE, 'YYYY-MM') AS mes,
         CASE WHEN EXTRACT(DAY FROM pa.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
-        pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, 'Abono a deuda' AS concepto, 'Pago' AS tipo, pa.monto AS monto
+        pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, 'Pago' AS tipo, pa.monto AS monto
     FROM pagos pa JOIN tarjetas t ON pa.tarjeta_id = t.id JOIN personas p ON pa.persona_id = p.id
     ORDER BY fecha DESC
     """
-    df_rep = pd.read_sql_query(q_det, conn)
+    df_rep = consultar_datos(q_det)
     
     q_deudas = """
     WITH total_compras AS (SELECT p.nombre AS persona, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id GROUP BY p.nombre),
@@ -333,8 +371,7 @@ elif menu == "📝 Reportes":
     FROM personas p LEFT JOIN total_compras tc ON p.nombre = tc.persona LEFT JOIN total_pagos tp ON p.nombre = tp.persona
     WHERE COALESCE(tc.consumido, 0) > 0 OR COALESCE(tp.pagado, 0) > 0
     """
-    df_deudas = pd.read_sql_query(q_deudas, conn)
-    conn.close()
+    df_deudas = consultar_datos(q_deudas)
 
     if not df_rep.empty:
         df_rep.columns = [col.capitalize() for col in df_rep.columns]
@@ -344,7 +381,7 @@ elif menu == "📝 Reportes":
                 lambda v: 'background-color: #ffcdd2; color: black' if v == 'Compra' else 'background-color: #c8e6c9; color: black', 
                 subset=['Tipo']
             ), 
-            use_container_width=True, # Cambio 2 (Tablas adaptables)
+            use_container_width=True, 
             hide_index=True
         )
         st.download_button("Descargar Estado de Cuenta", data=df_rep.to_csv(index=False).encode('utf-8'), file_name="estado_cuenta.csv", mime="text/csv", use_container_width=True)
@@ -372,27 +409,52 @@ elif menu == "📝 Reportes":
             elif sp['Deudareal'] < 0: msg += f"✨ *SALDO A FAVOR: ${abs(sp['Deudareal']):.2f}*"
             else: msg += "✅ *CUENTA LIQUIDADA*"
             
-            st.text_area("Copia el texto:", value=msg, height=250)
+            st.write("👆 **Toca el ícono en la esquina superior derecha del cuadro para copiar:**")
+            st.code(msg, language="text")
 
-# --- 5. BORRAR REGISTROS ---
-elif menu == "🗑️ Borrar":
-    conn = conectar_bd()
-    df_del_c = pd.read_sql_query("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.id DESC", conn)
+# --- 5. GESTIÓN (EDITAR / BORRAR) ---
+elif menu == "🛠️ Gestionar":
+    df_del_c = consultar_datos("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.fecha DESC")
     
     if not df_del_c.empty:
         df_del_c.columns = [col.capitalize() for col in df_del_c.columns]
         opciones = [f"ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})" for _, r in df_del_c.iterrows()]
-        seleccion_borrar = st.selectbox("Selecciona la compra a eliminar:", opciones)
+        seleccion_borrar = st.selectbox("Selecciona un movimiento:", opciones)
+        id_seleccionado = seleccion_borrar.split(" | ")[0].replace("ID: ", "")
         
-        if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True):
-            id_a_borrar = seleccion_borrar.split(" | ")[0].replace("ID: ", "")
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM compras WHERE id = %s", (id_a_borrar,))
-            conn.commit()
-            conn.close()
-            st.session_state.mensaje_exito = "🗑️ Compra eliminada."
-            st.rerun()
-    conn.close()
+        fila_actual = df_del_c[df_del_c['Id'] == int(id_seleccionado)].iloc[0]
+        
+        t_editar, t_eliminar = st.tabs(["✏️ Editar Datos", "🗑️ Eliminar Registro"])
+        
+        with t_editar:
+            with st.form("form_editar"):
+                st.info("💡 Solo puedes editar nombre y fecha. Para cambiar montos o personas involucradas, es más seguro eliminar el registro y volver a crearlo.")
+                nuevo_concepto = st.text_input("Concepto", value=fila_actual['Concepto'])
+                nueva_fecha = st.date_input("Fecha", pd.to_datetime(fila_actual['Fecha']))
+                
+                if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
+                    conn = conectar_bd()
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                    conn.commit()
+                    conn.close()
+                    st.cache_data.clear()
+                    st.session_state.mensaje_exito = "✏️ Registro actualizado correctamente."
+                    st.rerun()
+                    
+        with t_eliminar:
+            if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
+                conn = conectar_bd()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
+                conn.commit()
+                conn.close()
+                st.cache_data.clear()
+                st.session_state.mensaje_exito = "🗑️ Compra eliminada de la nube."
+                st.rerun()
+    else:
+        # AGREGAMOS ESTO PARA QUE NO SE VEA BLANCO
+        st.info("📭 Aún no hay compras registradas para gestionar.")
 
 # --- 6. AJUSTES ---
 elif menu == "⚙️ Ajustes":
@@ -409,5 +471,6 @@ elif menu == "⚙️ Ajustes":
                 cursor.execute("INSERT INTO tarjetas (nombre, dia_corte, dia_pago) VALUES (%s, %s, %s)", (n_t, corte, pago))
                 conn.commit()
                 conn.close()
+                st.cache_data.clear()
                 st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada."
                 st.rerun()
