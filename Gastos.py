@@ -11,8 +11,13 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
-st.set_page_config(page_title="Gestor Avanzado de Tarjetas", page_icon="💳", layout="wide")
-st.markdown("""<style>.stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }</style>""", unsafe_allow_html=True)
+st.set_page_config(page_title="Gestor de Tarjetas", page_icon="💳", layout="wide")
+# Estilos CSS adicionales para mejorar vista en celular
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
+    </style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # PANTALLA DE INICIO DE SESIÓN (LOGIN)
@@ -30,16 +35,14 @@ def verificar_password():
             btn_login = st.form_submit_button("Iniciar Sesión 🚀", use_container_width=True)
             
             if btn_login:
-                # Compara con la contraseña guardada en secrets.toml
                 password_correcta = st.secrets.get("APP_PASSWORD", "1234")
                 if password_input == password_correcta:
                     st.session_state.autenticado = True
                     st.rerun()
                 else:
                     st.error("❌ Contraseña incorrecta. Inténtalo de nuevo.")
-        st.stop()  # Detiene la ejecución del código si no está autenticado
+        st.stop()
 
-# Ejecutar verificación de contraseña antes de cargar la app
 verificar_password()
 
 # ---------------------------------------------------------
@@ -92,17 +95,28 @@ def sumar_meses(fecha_original, meses_a_sumar):
     return datetime(año, mes, dia)
 
 # ---------------------------------------------------------
-# INTERFAZ PRINCIPAL (SOLO ACCESIBLE CON LOGIN)
+# INTERFAZ PRINCIPAL (MOBILE FIRST)
 # ---------------------------------------------------------
-st.title("💳 Gestor Avanzado de Tarjetas")
 
-# Botón para cerrar sesión en la barra lateral
+# --- MENÚ LATERAL (SIDEBAR) ---
 with st.sidebar:
+    st.title("📱 Menú Principal")
+    # Cambio 3: Navegación tipo App Móvil
+    menu = st.radio("Navegación:", [
+        "📊 Dashboard", 
+        "🛒 Registrar Compra", 
+        "💸 Liquidar Deuda", 
+        "📝 Reportes", 
+        "🗑️ Borrar", 
+        "⚙️ Ajustes"
+    ])
+    st.divider()
     st.write("👤 **Sesión Activa**")
     if st.button("Cerrar Sesión 🚪", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 
+# Mensajes de estado globales
 if 'mensaje_exito' in st.session_state:
     st.success(st.session_state.mensaje_exito)
     del st.session_state.mensaje_exito
@@ -110,17 +124,17 @@ if 'mensaje_error' in st.session_state:
     st.error(st.session_state.mensaje_error)
     del st.session_state.mensaje_error
 
-t_resumen, t_compras, t_pagos, t_reportes, t_borrar, t_ajustes = st.tabs([
-    "📊 Dashboard", "🛒 Registrar Compra", "💸 Liquidar Deuda", "📝 Reportes", "🗑️ Borrar", "⚙️ Ajustes"
-])
+st.title(menu)
 
 # --- 1. DASHBOARD ---
-with t_resumen:
-    c_f1, c_f2, _ = st.columns([1, 1, 2])
-    with c_f1:
-        mes_filtro = st.text_input("Filtrar por Mes (YYYY-MM)", value=datetime.now().strftime("%Y-%m"))
-    with c_f2:
-        quincena_filtro = st.selectbox("Filtrar por Quincena", ["Mes Completo", "1ra Quincena (1-15)", "2da Quincena (16-31)"])
+if menu == "📊 Dashboard":
+    # Cambio 1: Filtros ocultables con st.expander para ahorrar espacio en celular
+    with st.expander("🔍 Mostrar/Ocultar Filtros de Tiempo", expanded=False):
+        c_f1, c_f2 = st.columns(2)
+        with c_f1:
+            mes_filtro = st.text_input("Filtrar por Mes (YYYY-MM)", value=datetime.now().strftime("%Y-%m"))
+        with c_f2:
+            quincena_filtro = st.selectbox("Filtrar por Quincena", ["Mes Completo", "1ra Quincena (1-15)", "2da Quincena (16-31)"])
 
     condicion_c = f"TO_CHAR(c.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
     condicion_p = f"TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
@@ -170,61 +184,59 @@ with t_resumen:
        OR ('{quincena_filtro}' = 'Mes Completo' AND (COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0)) > 0.01)
     ORDER BY b.Persona, b.Tarjeta
     """
-    
     df_saldos = pd.read_sql_query(query_saldos, conn)
     df_categorias = pd.read_sql_query(f"SELECT categoria, SUM(monto_total) as total FROM compras c WHERE {condicion_c} GROUP BY categoria", conn)
     conn.close()
 
     if not df_saldos.empty:
-        c1, c2, c3, c4 = st.columns(4)
+        # En móvil las métricas se apilarán solas gracias a st.columns
+        c1, c2 = st.columns(2)
         c1.metric("💸 Deuda (Histórica)", f"${df_saldos['Deuda Total (Histórica)'].sum():,.2f}")
         c2.metric("🎯 Saldo del Filtro", f"${df_saldos['Saldo del Filtro'].sum():,.2f}")
+        
+        c3, c4 = st.columns(2)
         c3.metric("✅ Pagos (en Filtro)", f"${df_saldos['Pagos Filtro'].sum():,.2f}")
         c4.metric("📅 Activo", f"{mes_filtro} | {quincena_filtro[:3]}")
         st.divider()
         
-        col_tabla, col_grafico = st.columns([3, 2])
-        with col_tabla:
-            st.dataframe(df_saldos.style.format({"Consumo Filtro": "${:.2f}", "Pagos Filtro": "${:.2f}", "Saldo del Filtro": "${:.2f}", "Deuda Total (Histórica)": "${:.2f}"}), use_container_width=False, hide_index=True)
+        st.subheader("📋 Detalle de Saldos")
+        # Cambio 2: use_container_width=True para que no desborde en celular
+        st.dataframe(df_saldos.style.format({"Consumo Filtro": "${:.2f}", "Pagos Filtro": "${:.2f}", "Saldo del Filtro": "${:.2f}", "Deuda Total (Histórica)": "${:.2f}"}), use_container_width=True, hide_index=True)
             
-        with col_grafico:
-            if not df_categorias.empty:
-                fig = px.pie(df_categorias, values='total', names='categoria', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                fig.update_traces(textposition='inside', textinfo='percent+label', hovertemplate="%{label}: <br>$%{value:,.2f} <br>(%{percent})")
-                fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+        st.subheader("🛍️ Gastos por Categoría")
+        if not df_categorias.empty:
+            fig = px.pie(df_categorias, values='total', names='categoria', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig.update_traces(textposition='inside', textinfo='percent+label', hovertemplate="%{label}: <br>$%{value:,.2f} <br>(%{percent})")
+            fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
     else:
         st.info(f"No hay movimientos registrados ni deudas para {quincena_filtro} de {mes_filtro}.")
 
 # --- 2. COMPRAS ---
-with t_compras:
-    st.header("🛒 Registrar Nueva Compra")
+elif menu == "🛒 Registrar Compra":
     conn = conectar_bd()
     tarjetas = pd.read_sql_query("SELECT id, nombre FROM tarjetas", conn)
     personas = pd.read_sql_query("SELECT id, nombre FROM personas", conn)
     conn.close()
 
     if not tarjetas.empty and not personas.empty:
-        c1, c2 = st.columns(2)
-        with c1:
+        with st.expander("➕ Completar detalles de compra", expanded=True):
             concepto = st.text_input("Concepto (Ej. Chedraui)")
             monto = st.number_input("Monto Total ($)", min_value=0.01, step=10.0, value=100.0)
             categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Ropa", "Transporte", "Otros"])
             msi = st.selectbox("Meses Sin Intereses", [1, 3, 6, 9, 12, 18, 24], index=0)
-        with c2:
             fecha = st.date_input("Fecha de 1ra mensualidad", datetime.today())
             tarjeta_sel = st.selectbox("Tarjeta", options=tarjetas["id"], format_func=lambda x: tarjetas.loc[tarjetas["id"]==x, "nombre"].values[0])
             participantes_sel = st.multiselect("Involucrados:", options=personas["id"], format_func=lambda x: personas.loc[personas["id"]==x, "nombre"].values[0])
-        
-        st.divider()
-        tipo_division = st.radio("¿Cómo se paga?", ["Partes Iguales", "Monto Exacto por Persona"], horizontal=True)
-        
-        montos_manuales = {}
-        if tipo_division == "Monto Exacto por Persona" and participantes_sel:
-            cols = st.columns(len(participantes_sel))
-            for i, p_id in enumerate(participantes_sel):
-                n_persona = personas.loc[personas["id"]==p_id, "nombre"].values[0]
-                montos_manuales[p_id] = cols[i].number_input(f"Pago de {n_persona}", min_value=0.0, max_value=monto, step=10.0)
+            
+            st.divider()
+            tipo_division = st.radio("¿Cómo se paga?", ["Partes Iguales", "Monto Exacto por Persona"], horizontal=True)
+            
+            montos_manuales = {}
+            if tipo_division == "Monto Exacto por Persona" and participantes_sel:
+                for p_id in participantes_sel:
+                    n_persona = personas.loc[personas["id"]==p_id, "nombre"].values[0]
+                    montos_manuales[p_id] = st.number_input(f"Pago de {n_persona}", min_value=0.0, max_value=monto, step=10.0)
 
         if st.button("Guardar Compra 💾", use_container_width=True):
             if concepto and participantes_sel:
@@ -250,23 +262,21 @@ with t_compras:
                                            (compra_id, p_id, cuota_persona))
                     conn.commit()
                     conn.close()
-                    st.session_state.mensaje_exito = f"✨ ¡Compra '{concepto}' guardada en la NUBE!"
+                    st.session_state.mensaje_exito = f"✨ ¡Compra '{concepto}' guardada!"
                     st.rerun()
+    else:
+        st.warning("⚠️ Primero añade tarjetas y personas en Ajustes.")
 
 # --- 3. PAGOS ---
-with t_pagos:
-    st.header("💸 Registrar Abono a Deuda")
+elif menu == "💸 Liquidar Deuda":
     conn = conectar_bd()
     tarjetas_pago = pd.read_sql_query("SELECT id, nombre FROM tarjetas", conn)
     personas_pago = pd.read_sql_query("SELECT id, nombre FROM personas", conn)
     conn.close()
 
     if not tarjetas_pago.empty and not personas_pago.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            p_pago = st.selectbox("¿Quién va a pagar?", options=personas_pago["id"], format_func=lambda x: personas_pago.loc[personas_pago["id"]==x, "nombre"].values[0])
-        with c2:
-            t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
+        p_pago = st.selectbox("¿Quién va a pagar?", options=personas_pago["id"], format_func=lambda x: personas_pago.loc[personas_pago["id"]==x, "nombre"].values[0])
+        t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
         
         conn = conectar_bd()
         cursor = conn.cursor()
@@ -277,13 +287,15 @@ with t_pagos:
         conn.close()
         
         deuda_actual = total_comprado - total_pagado
-        if deuda_actual > 0: st.info(f"💰 Deuda actual: **${deuda_actual:,.2f}**")
-        else: st.success("✅ Sin deudas pendientes en esta tarjeta.")
+        if deuda_actual > 0: 
+            st.info(f"💰 Deuda actual: **${deuda_actual:,.2f}**")
+        else: 
+            st.success("✅ Sin deudas pendientes en esta tarjeta.")
             
-        st.divider()
-        tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"], horizontal=True)
-        m_pago = deuda_actual if tipo_pago == "Liquidar deuda completa" else st.number_input("Monto ($)", min_value=0.01, step=50.0, value=float(min(500.0, max(0.01, deuda_actual))))
-        f_pago = st.date_input("Fecha del Pago", datetime.today())
+        with st.expander("Detalles del Abono", expanded=True):
+            tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
+            m_pago = deuda_actual if tipo_pago == "Liquidar deuda completa" else st.number_input("Monto ($)", min_value=0.01, step=50.0, value=float(min(500.0, max(0.01, deuda_actual))))
+            f_pago = st.date_input("Fecha del Pago", datetime.today())
         
         if st.button("Registrar Pago ✅", use_container_width=True):
             if m_pago > 0:
@@ -292,14 +304,12 @@ with t_pagos:
                 cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha) VALUES (%s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago)))
                 conn.commit()
                 conn.close()
-                st.session_state.mensaje_exito = f"✅ Pago de ${m_pago:,.2f} registrado en la NUBE."
+                st.session_state.mensaje_exito = f"✅ Pago de ${m_pago:,.2f} registrado."
                 st.rerun()
 
 # --- 4. REPORTES ---
-with t_reportes:
-    st.header("📝 Exportar Datos y Cobros")
+elif menu == "📝 Reportes":
     conn = conectar_bd()
-    
     q_det = """
     SELECT 
         TO_CHAR(c.fecha::DATE, 'YYYY-MM') AS mes,
@@ -334,40 +344,38 @@ with t_reportes:
                 lambda v: 'background-color: #ffcdd2; color: black' if v == 'Compra' else 'background-color: #c8e6c9; color: black', 
                 subset=['Tipo']
             ), 
-            use_container_width=True, 
+            use_container_width=True, # Cambio 2 (Tablas adaptables)
             hide_index=True
         )
+        st.download_button("Descargar Estado de Cuenta", data=df_rep.to_csv(index=False).encode('utf-8'), file_name="estado_cuenta.csv", mime="text/csv", use_container_width=True)
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button("Descargar Estado de Cuenta", data=df_rep.to_csv(index=False).encode('utf-8'), file_name="estado_cuenta.csv", mime="text/csv")
-        with c2:
-            if not df_deudas.empty:
-                df_deudas.columns = [col.capitalize() for col in df_deudas.columns]
-                
-                p_wa = st.selectbox("Generar WhatsApp para:", df_deudas['Persona'].unique())
-                df_filtro = df_rep[df_rep['Persona'] == p_wa]
-                sp = df_deudas[df_deudas['Persona'] == p_wa].iloc[0]
-                
-                msg = f"Hola {p_wa}, este es tu estado de cuenta:\n\n"
-                periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
-                for _, row in periodos.iterrows():
-                    m, q = row['Mes'], row['Quincena']
-                    msg += f"📅 *{m} | {q}*\n"
-                    for _, f in df_filtro[(df_filtro['Mes'] == m) & (df_filtro['Quincena'] == q)].iterrows():
-                        msg += f"  {'🛒' if f['Tipo']=='Compra' else '✅'} {f['Concepto']} ({f['Tarjeta']}): {'-' if f['Tipo']=='Pago' else ''}${f['Monto']:.2f}\n"
-                    msg += "\n"
-                
-                msg += f"💰 *Total Consumido:* ${sp['Consumido']:.2f}\n💰 *Total Abonado:* ${sp['Pagado']:.2f}\n"
-                if sp['Deudareal'] > 0: msg += f"👉 *SALDO PENDIENTE: ${sp['Deudareal']:.2f}*"
-                elif sp['Deudareal'] < 0: msg += f"✨ *SALDO A FAVOR: ${abs(sp['Deudareal']):.2f}*"
-                else: msg += "✅ *CUENTA LIQUIDADA*"
-                
-                st.text_area("Copia este texto:", value=msg, height=300)
+        st.divider()
+        st.subheader("💬 Generar WhatsApp")
+        if not df_deudas.empty:
+            df_deudas.columns = [col.capitalize() for col in df_deudas.columns]
+            
+            p_wa = st.selectbox("Selecciona para generar cobro:", df_deudas['Persona'].unique())
+            df_filtro = df_rep[df_rep['Persona'] == p_wa]
+            sp = df_deudas[df_deudas['Persona'] == p_wa].iloc[0]
+            
+            msg = f"Hola {p_wa}, este es tu estado de cuenta:\n\n"
+            periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
+            for _, row in periodos.iterrows():
+                m, q = row['Mes'], row['Quincena']
+                msg += f"📅 *{m} | {q}*\n"
+                for _, f in df_filtro[(df_filtro['Mes'] == m) & (df_filtro['Quincena'] == q)].iterrows():
+                    msg += f"  {'🛒' if f['Tipo']=='Compra' else '✅'} {f['Concepto']} ({f['Tarjeta']}): {'-' if f['Tipo']=='Pago' else ''}${f['Monto']:.2f}\n"
+                msg += "\n"
+            
+            msg += f"💰 *Total Consumido:* ${sp['Consumido']:.2f}\n💰 *Total Abonado:* ${sp['Pagado']:.2f}\n"
+            if sp['Deudareal'] > 0: msg += f"👉 *SALDO PENDIENTE: ${sp['Deudareal']:.2f}*"
+            elif sp['Deudareal'] < 0: msg += f"✨ *SALDO A FAVOR: ${abs(sp['Deudareal']):.2f}*"
+            else: msg += "✅ *CUENTA LIQUIDADA*"
+            
+            st.text_area("Copia el texto:", value=msg, height=250)
 
 # --- 5. BORRAR REGISTROS ---
-with t_borrar:
-    st.header("🗑️ Eliminar Registros")
+elif menu == "🗑️ Borrar":
     conn = conectar_bd()
     df_del_c = pd.read_sql_query("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.id DESC", conn)
     
@@ -376,31 +384,30 @@ with t_borrar:
         opciones = [f"ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})" for _, r in df_del_c.iterrows()]
         seleccion_borrar = st.selectbox("Selecciona la compra a eliminar:", opciones)
         
-        if st.button("🚨 Eliminar Compra Definitivamente"):
+        if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True):
             id_a_borrar = seleccion_borrar.split(" | ")[0].replace("ID: ", "")
             cursor = conn.cursor()
             cursor.execute("DELETE FROM compras WHERE id = %s", (id_a_borrar,))
             conn.commit()
             conn.close()
-            st.session_state.mensaje_exito = "🗑️ Compra eliminada de la nube."
+            st.session_state.mensaje_exito = "🗑️ Compra eliminada."
             st.rerun()
     conn.close()
 
 # --- 6. AJUSTES ---
-with t_ajustes:
-    st.header("⚙ Configuración")
-    with st.form("form_tarjeta", clear_on_submit=True):
-        st.subheader("💳 Añadir Nueva Tarjeta")
-        n_t = st.text_input("Nombre de la Tarjeta")
-        col_corte, col_pago = st.columns(2)
-        with col_corte: corte = st.number_input("Corte", 1, 31, 15)
-        with col_pago: pago = st.number_input("Pago", 1, 31, 5)
-            
-        if st.form_submit_button("Guardar Tarjeta") and n_t.strip():
-            conn = conectar_bd()
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO tarjetas (nombre, dia_corte, dia_pago) VALUES (%s, %s, %s)", (n_t, corte, pago))
-            conn.commit()
-            conn.close()
-            st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada a la nube."
-            st.rerun()
+elif menu == "⚙️ Ajustes":
+    with st.expander("💳 Añadir Nueva Tarjeta", expanded=True):
+        with st.form("form_tarjeta", clear_on_submit=True):
+            n_t = st.text_input("Nombre de la Tarjeta")
+            col_corte, col_pago = st.columns(2)
+            with col_corte: corte = st.number_input("Día de Corte", 1, 31, 15)
+            with col_pago: pago = st.number_input("Día de Pago", 1, 31, 5)
+                
+            if st.form_submit_button("Guardar Tarjeta", use_container_width=True) and n_t.strip():
+                conn = conectar_bd()
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO tarjetas (nombre, dia_corte, dia_pago) VALUES (%s, %s, %s)", (n_t, corte, pago))
+                conn.commit()
+                conn.close()
+                st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada."
+                st.rerun()
