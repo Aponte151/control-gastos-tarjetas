@@ -194,19 +194,20 @@ if menu == "📊 Dashboard":
 
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
-    compras_periodo AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id),
     
-    -- Se agregó STRING_AGG para concatenar los conceptos si hay más de 1 pago en el filtro
+    -- Se agregó STRING_AGG para recopilar los nombres de las compras
+    compras_periodo AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido, STRING_AGG(c.concepto, ' | ') AS conceptos_compra FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id),
+    
     pagos_periodo AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado, STRING_AGG(pa.concepto, ' | ') AS conceptos_pago FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id),
     
     compras_global AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido_global FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id GROUP BY cp.persona_id, c.tarjeta_id),
     pagos_global AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado_global FROM pagos pa GROUP BY pa.persona_id, pa.tarjeta_id)
     
-    -- Se quitó la columna de Deuda Total y se agregó el Concepto de Pago
     SELECT b.Persona, b.Tarjeta, 
            ROUND(COALESCE(cp.consumido, 0)::numeric, 2) AS "Consumo Filtro", 
+           COALESCE(cp.conceptos_compra, '-') AS "Detalle Compras",
            ROUND(COALESCE(pp.pagado, 0)::numeric, 2) AS "Pagos Filtro",
-           COALESCE(pp.conceptos_pago, '-') AS "Concepto de Pago",
+           COALESCE(pp.conceptos_pago, '-') AS "Detalle Pagos",
            ROUND((COALESCE(cp.consumido, 0) - COALESCE(pp.pagado, 0))::numeric, 2) AS "Saldo del Filtro"
     FROM base_pt b
     LEFT JOIN compras_periodo cp ON b.persona_id = cp.persona_id AND b.tarjeta_id = cp.tarjeta_id 
