@@ -182,21 +182,32 @@ if menu == "📊 Dashboard":
         with c_f2:
             quincena_filtro = st.selectbox("Filtrar por Quincena", ["Mes Completo", "1ra Quincena (1-15)", "2da Quincena (16-31)"])
 
-    condicion_c = f"TO_CHAR(c.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
+    # 🧠 FÓRMULA SQL MAGISTRAL: Calcula la fecha de pago exacta basándose en el corte
+    calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
+
+    # Los filtros ahora evalúan la fecha de cobro proyectada, no la de compra
+    condicion_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
     condicion_p = f"TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
     
     if "1ra" in quincena_filtro:
-        condicion_c += " AND EXTRACT(DAY FROM c.fecha::DATE) <= 15"
+        condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
     elif "2da" in quincena_filtro:
-        condicion_c += " AND EXTRACT(DAY FROM c.fecha::DATE) > 15"
+        condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
 
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
     
-    -- Se agregó STRING_AGG para recopilar los nombres de las compras
-    compras_periodo AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido, STRING_AGG(c.concepto, ' | ') AS conceptos_compra FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id),
+    -- IMPORTANTE: Agregamos el JOIN a tarjetas 't' para poder usar sus días de corte/pago
+    compras_periodo AS (
+        SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido, STRING_AGG(c.concepto, ' | ') AS conceptos_compra 
+        FROM compras c 
+        JOIN compra_participantes cp ON c.id = cp.compra_id 
+        JOIN tarjetas t ON c.tarjeta_id = t.id 
+        WHERE {condicion_c} 
+        GROUP BY cp.persona_id, c.tarjeta_id
+    ),
     
     pagos_periodo AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado, STRING_AGG(pa.concepto, ' | ') AS conceptos_pago FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id),
     
@@ -413,11 +424,9 @@ elif menu == "💸 Liquidar Deuda":
 
 # --- 4. REPORTES ---
 elif menu == "📝 Reportes":
-    # Consultar tarjetas disponibles para el filtro
     tarjetas_disp = consultar_datos("SELECT id, nombre FROM tarjetas")
     nombres_tarjetas = ["Todas"] + tarjetas_disp['nombre'].tolist() if not tarjetas_disp.empty else ["Todas"]
 
-    # Filtros de búsqueda para reportes a 3 columnas
     with st.expander("🔍 Filtros de Búsqueda", expanded=True):
         c_f1, c_f2, c_f3 = st.columns(3)
         with c_f1:
@@ -427,39 +436,47 @@ elif menu == "📝 Reportes":
         with c_f3:
             tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
 
-    # Construir las condiciones SQL para la tabla detallada
+    # Misma fórmula SQL proyectiva que usamos en el Dashboard
+    calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
+
     cond_c, cond_p = "1=1", "1=1"
     if mes_filtro.strip():
-        cond_c += f" AND TO_CHAR(c.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
+        cond_c += f" AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
         cond_p += f" AND TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
     if "1ra" in quincena_filtro:
-        cond_c += " AND EXTRACT(DAY FROM c.fecha::DATE) <= 15"
+        cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
         cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
     elif "2da" in quincena_filtro:
-        cond_c += " AND EXTRACT(DAY FROM c.fecha::DATE) > 15"
+        cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
         cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
         
-    # Filtro de tarjeta (afecta tanto a la lista como a la deuda calculada)
     if tarjeta_filtro != "Todas":
         cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
         cond_p += f" AND t.nombre = '{tarjeta_filtro}'"
 
+    # Seleccionamos el Mes y Quincena proyectados, pero mantenemos c.fecha visible para que sepas cuándo se compró realmente
     q_det = f"""
     SELECT 
-        TO_CHAR(c.fecha::DATE, 'YYYY-MM') AS mes,
-        CASE WHEN EXTRACT(DAY FROM c.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
+        TO_CHAR({calc_pago}, 'YYYY-MM') AS mes,
+        CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
         c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, 'Compra' AS tipo, cp.monto_asignado AS monto
-    FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id
+    FROM compras c 
+    JOIN tarjetas t ON c.tarjeta_id = t.id 
+    JOIN compra_participantes cp ON c.id = cp.compra_id 
+    JOIN personas p ON cp.persona_id = p.id
     WHERE {cond_c}
     UNION ALL
     SELECT 
         TO_CHAR(pa.fecha::DATE, 'YYYY-MM') AS mes,
         CASE WHEN EXTRACT(DAY FROM pa.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
         pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, 'Pago' AS tipo, pa.monto AS monto
-    FROM pagos pa JOIN tarjetas t ON pa.tarjeta_id = t.id JOIN personas p ON pa.persona_id = p.id
+    FROM pagos pa 
+    JOIN tarjetas t ON pa.tarjeta_id = t.id 
+    JOIN personas p ON pa.persona_id = p.id
     WHERE {cond_p}
     ORDER BY fecha DESC
     """
+    
     df_rep = consultar_datos(q_det)
 
     if not df_rep.empty:
