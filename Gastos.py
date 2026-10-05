@@ -353,15 +353,21 @@ elif menu == "💸 Liquidar Deuda":
 
 # --- 4. REPORTES ---
 elif menu == "📝 Reportes":
-    # NUEVO: Filtros de búsqueda para reportes
+    # Consultar tarjetas disponibles para el filtro
+    tarjetas_disp = consultar_datos("SELECT id, nombre FROM tarjetas")
+    nombres_tarjetas = ["Todas"] + tarjetas_disp['nombre'].tolist() if not tarjetas_disp.empty else ["Todas"]
+
+    # NUEVO: Filtros de búsqueda para reportes a 3 columnas
     with st.expander("🔍 Filtros de Búsqueda", expanded=True):
-        c_f1, c_f2 = st.columns(2)
+        c_f1, c_f2, c_f3 = st.columns(3)
         with c_f1:
-            mes_filtro = st.text_input("Mes a buscar (YYYY-MM) - Deja en blanco para todos", value=datetime.now().strftime("%Y-%m"), key="rep_mes")
+            mes_filtro = st.text_input("Mes (YYYY-MM) - Vacio para todos", value=datetime.now().strftime("%Y-%m"), key="rep_mes")
         with c_f2:
             quincena_filtro = st.selectbox("Quincena", ["Todas", "1ra Quincena (1-15)", "2da Quincena (16-31)"], key="rep_quin")
+        with c_f3:
+            tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
 
-    # Construir las condiciones SQL
+    # Construir las condiciones SQL para la tabla detallada
     cond_c, cond_p = "1=1", "1=1"
     if mes_filtro.strip():
         cond_c += f" AND TO_CHAR(c.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
@@ -372,6 +378,14 @@ elif menu == "📝 Reportes":
     elif "2da" in quincena_filtro:
         cond_c += " AND EXTRACT(DAY FROM c.fecha::DATE) > 15"
         cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
+        
+    # Filtro de tarjeta (afecta tanto a la lista como a la deuda calculada)
+    cond_deuda_c, cond_deuda_p = "1=1", "1=1"
+    if tarjeta_filtro != "Todas":
+        cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
+        cond_p += f" AND t.nombre = '{tarjeta_filtro}'"
+        cond_deuda_c += f" AND c.tarjeta_id = (SELECT id FROM tarjetas WHERE nombre = '{tarjeta_filtro}')"
+        cond_deuda_p += f" AND pa.tarjeta_id = (SELECT id FROM tarjetas WHERE nombre = '{tarjeta_filtro}')"
 
     q_det = f"""
     SELECT 
@@ -391,9 +405,10 @@ elif menu == "📝 Reportes":
     """
     df_rep = consultar_datos(q_det)
     
-    q_deudas = """
-    WITH total_compras AS (SELECT p.nombre AS persona, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id GROUP BY p.nombre),
-    total_pagos AS (SELECT p.nombre AS persona, SUM(pa.monto) AS pagado FROM pagos pa JOIN personas p ON pa.persona_id = p.id GROUP BY p.nombre)
+    # NUEVO: La consulta de deudas ahora respeta el filtro de tarjeta
+    q_deudas = f"""
+    WITH total_compras AS (SELECT p.nombre AS persona, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id WHERE {cond_deuda_c} GROUP BY p.nombre),
+    total_pagos AS (SELECT p.nombre AS persona, SUM(pa.monto) AS pagado FROM pagos pa JOIN personas p ON pa.persona_id = p.id WHERE {cond_deuda_p} GROUP BY p.nombre)
     SELECT p.nombre AS persona, COALESCE(tc.consumido, 0) AS consumido, COALESCE(tp.pagado, 0) AS pagado, (COALESCE(tc.consumido, 0) - COALESCE(tp.pagado, 0)) AS deudareal
     FROM personas p LEFT JOIN total_compras tc ON p.nombre = tc.persona LEFT JOIN total_pagos tp ON p.nombre = tp.persona
     WHERE COALESCE(tc.consumido, 0) > 0 OR COALESCE(tp.pagado, 0) > 0
@@ -421,7 +436,10 @@ elif menu == "📝 Reportes":
             df_filtro = df_rep[df_rep['Persona'] == p_wa]
             sp = df_deudas[df_deudas['Persona'] == p_wa].iloc[0]
             
-            msg = f"Hola {p_wa}, este es tu estado de cuenta filtrado:\n\n"
+            # Ajustamos el texto del WhatsApp si seleccionaste una tarjeta
+            tarjeta_msg = f" en la tarjeta {tarjeta_filtro}" if tarjeta_filtro != "Todas" else ""
+            msg = f"Hola {p_wa}, este es tu estado de cuenta filtrado{tarjeta_msg}:\n\n"
+            
             periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
             for _, row in periodos.iterrows():
                 m, q = row['Mes'], row['Quincena']
@@ -458,6 +476,8 @@ elif menu == "📝 Reportes":
                         
             with st.expander("Ver texto generado (Respaldo manual)"):
                 st.code(msg, language="text")
+    else:
+        st.info("📭 No hay movimientos para los filtros seleccionados.")
 
 # --- 5. GESTIÓN (EDITAR / BORRAR) ---
 elif menu == "🛠️ Gestionar":
@@ -506,6 +526,7 @@ elif menu == "🛠️ Gestionar":
                     tipo_borrado = st.radio("¿Qué deseas borrar?", ["Borrar SOLO este mes", "Borrar TODAS las mensualidades de esta compra"])
                 else:
                     tipo_borrado = "Borrar SOLO este mes"
+                    base_concepto = "" # <--- LÍNEA AGREGADA
                     
                 if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
                     conn = conectar_bd()
