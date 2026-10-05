@@ -558,40 +558,70 @@ elif menu == "🛠️ Gestionar":
         
         if not df_del.empty:
             df_del.columns = [col.capitalize() for col in df_del.columns]
-            opciones = [f"ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})" for _, r in df_del.iterrows()]
+            
+            # NUEVO: Agregamos íconos visuales a la lista para identificar Recurrentes/MSI
+            opciones = []
+            for _, r in df_del.iterrows():
+                icono = "🔄" if re.search(r" \((Mes|Recurrente) \d+/\d+\)$", r['Concepto']) else "🛒"
+                opciones.append(f"{icono} ID: {r['Id']} | {r['Fecha']} | {r['Concepto']} | ${r['Monto_total']} ({r['Tarjeta']})")
+            
             seleccion = st.selectbox("Selecciona un movimiento:", opciones)
-            id_seleccionado = seleccion.split(" | ")[0].replace("ID: ", "")
+            # Extracción del ID a prueba de fallos usando Regex
+            id_seleccionado = re.search(r"ID: (\d+)", seleccion).group(1)
             
             fila_actual = df_del[df_del['Id'] == int(id_seleccionado)].iloc[0]
+            
+            # Detección de Serie para usarla tanto en Editar como en Borrar
+            es_serie = bool(re.search(r" \((Mes|Recurrente) \d+/\d+\)$", fila_actual['Concepto']))
+            base_concepto = re.sub(r" \((Mes|Recurrente) \d+/\d+\)$", "", fila_actual['Concepto']) if es_serie else ""
             
             t_editar, t_eliminar = st.tabs(["✏️ Editar Datos", "🗑️ Eliminar Registro"])
             
             with t_editar:
+                if es_serie:
+                    st.info(f"🔄 Esta compra es de una serie programada: **{base_concepto}**")
+                    tipo_edicion = st.radio("¿Qué deseas editar?", ["Modificar SOLO este mes", "Modificar nombre a TODA la serie"])
+                else:
+                    tipo_edicion = "Modificar SOLO este mes"
+                    
                 with st.form("form_editar"):
-                    st.info("💡 Solo puedes editar nombre y fecha. Para cambiar montos, elimina el registro y vuelve a crearlo.")
-                    nuevo_concepto = st.text_input("Concepto", value=fila_actual['Concepto'])
-                    nueva_fecha = st.date_input("Fecha", pd.to_datetime(fila_actual['Fecha']))
+                    st.info("💡 Para cambiar montos, elimina el registro (o la serie entera) y vuelve a crearlo.")
+                    
+                    if es_serie and tipo_edicion == "Modificar nombre a TODA la serie":
+                        nuevo_concepto = st.text_input("Nuevo Nombre Base (Ej. Si dice 'Gym', pon 'SmartFit')", value=base_concepto)
+                        st.warning("Nota: Al editar la serie completa, solo cambiaremos el nombre de los cargos para mantener las fechas de las mensualidades sincronizadas.")
+                        nueva_fecha = pd.to_datetime(fila_actual['Fecha'])
+                    else:
+                        nuevo_concepto = st.text_input("Concepto", value=fila_actual['Concepto'])
+                        nueva_fecha = st.date_input("Fecha", pd.to_datetime(fila_actual['Fecha']))
                     
                     if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                        
+                        if es_serie and tipo_edicion == "Modificar nombre a TODA la serie":
+                            # Actualiza el nombre usando REPLACE para mantener el (Mes 1/12) original
+                            cursor.execute("""
+                                UPDATE compras 
+                                SET concepto = REPLACE(concepto, %s, %s) 
+                                WHERE concepto LIKE %s AND tarjeta_id = %s
+                            """, (base_concepto, nuevo_concepto, f"{base_concepto} (%", int(fila_actual['Tarjeta_id'])))
+                            st.session_state.mensaje_exito = f"✏️ Nombre de la serie actualizado a '{nuevo_concepto}'."
+                        else:
+                            cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                            st.session_state.mensaje_exito = "✏️ Registro actualizado."
+                            
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
-                        st.session_state.mensaje_exito = "✏️ Registro actualizado."
                         st.rerun()
                         
             with t_eliminar:
-                es_serie = bool(re.search(r" \((Mes|Recurrente) \d+/\d+\)$", fila_actual['Concepto']))
-                
                 if es_serie:
-                    base_concepto = re.sub(r" \((Mes|Recurrente) \d+/\d+\)$", "", fila_actual['Concepto'])
                     st.warning(f"⚠️ Esta compra es parte de una serie programada: **{base_concepto}**")
                     tipo_borrado = st.radio("¿Qué deseas borrar?", ["Borrar SOLO este mes", "Borrar TODA la serie"])
                 else:
                     tipo_borrado = "Borrar SOLO este mes"
-                    base_concepto = ""
                     
                 if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
                     conn = conectar_bd()
@@ -611,14 +641,14 @@ elif menu == "🛠️ Gestionar":
         else:
             st.info("📭 Aún no hay compras registradas para gestionar.")
             
-    else: 
+    else: # Gestión de Pagos / Abonos
         df_del_p = consultar_datos("SELECT pa.id, pa.fecha, pa.concepto, pa.monto, p.nombre as persona, t.nombre as tarjeta FROM pagos pa JOIN personas p ON pa.persona_id = p.id JOIN tarjetas t ON pa.tarjeta_id = t.id ORDER BY pa.fecha DESC")
         
         if not df_del_p.empty:
             df_del_p.columns = [col.capitalize() for col in df_del_p.columns]
             opciones_p = [f"ID: {r['Id']} | {r['Fecha']} | {r['Persona']} abonó ${r['Monto']} ({r['Concepto']})" for _, r in df_del_p.iterrows()]
             seleccion_p = st.selectbox("Selecciona el abono a eliminar:", opciones_p)
-            id_p_seleccionado = seleccion_p.split(" | ")[0].replace("ID: ", "")
+            id_p_seleccionado = re.search(r"ID: (\d+)", seleccion_p).group(1)
             
             if st.button("🚨 Eliminar Abono Definitivamente", use_container_width=True, type="primary"):
                 conn = conectar_bd()
