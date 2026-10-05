@@ -488,7 +488,7 @@ elif menu == "🛠️ Gestionar":
                     if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
+                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", int(fila_actual['Tarjeta_id'])))
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
