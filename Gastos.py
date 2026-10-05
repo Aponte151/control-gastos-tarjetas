@@ -628,6 +628,7 @@ elif menu == "⚙️ Ajustes":
         
     st.divider()
 
+    # 1. Agregar Tarjeta
     with st.expander("➕ Añadir Nueva Tarjeta", expanded=False):
         with st.form("form_tarjeta", clear_on_submit=True):
             n_t = st.text_input("Nombre de la Tarjeta")
@@ -645,10 +646,56 @@ elif menu == "⚙️ Ajustes":
                 st.session_state.mensaje_exito = f"💳 Tarjeta '{n_t}' agregada."
                 st.rerun()
 
+    # NUEVO: 2. Gestionar Tarjeta (Editar / Borrar)
+    with st.expander("🛠️ Gestionar Tarjetas Existentes", expanded=False):
+        if not df_tarjetas.empty:
+            opciones_t = [f"ID: {r['ID']} | {r['Tarjeta']}" for _, r in df_tarjetas.iterrows()]
+            seleccion_t = st.selectbox("Selecciona la tarjeta a modificar o eliminar:", opciones_t)
+            id_t_sel = seleccion_t.split(" | ")[0].replace("ID: ", "")
+            
+            fila_t = df_tarjetas[df_tarjetas['ID'] == int(id_t_sel)].iloc[0]
+            
+            t_editar_t, t_eliminar_t = st.tabs(["✏️ Editar Tarjeta", "🗑️ Eliminar Tarjeta"])
+            
+            with t_editar_t:
+                with st.form("form_editar_tarjeta"):
+                    nuevo_nombre_t = st.text_input("Nombre de la Tarjeta", value=fila_t['Tarjeta'])
+                    c_corte, c_pago = st.columns(2)
+                    with c_corte: 
+                        nuevo_corte = st.number_input("Nuevo Día de Corte", 1, 31, int(fila_t['Día de Corte']))
+                    with c_pago: 
+                        nuevo_pago = st.number_input("Nuevo Día de Pago", 1, 31, int(fila_t['Día de Pago']))
+                    
+                    if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
+                        conn = conectar_bd()
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE tarjetas SET nombre=%s, dia_corte=%s, dia_pago=%s WHERE id=%s", (nuevo_nombre_t, nuevo_corte, nuevo_pago, id_t_sel))
+                        conn.commit()
+                        conn.close()
+                        st.cache_data.clear()
+                        st.session_state.mensaje_exito = f"✏️ Tarjeta '{nuevo_nombre_t}' actualizada correctamente."
+                        st.rerun()
+                        
+            with t_eliminar_t:
+                st.warning("⚠️ **¡ADVERTENCIA CRÍTICA!** Eliminar una tarjeta borrará AUTOMÁTICAMENTE y para siempre todas las compras y abonos vinculados a ella.")
+                seguro_t = st.checkbox("Entiendo que esto borrará el historial de esta tarjeta", key="chk_del_t")
+                if st.button("🚨 Eliminar Tarjeta Definitivamente", use_container_width=True, type="primary", disabled=not seguro_t):
+                    conn = conectar_bd()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM tarjetas WHERE id = %s", (id_t_sel,))
+                    conn.commit()
+                    conn.close()
+                    st.cache_data.clear()
+                    st.session_state.mensaje_exito = "🗑️ Tarjeta y todo su historial eliminados."
+                    st.rerun()
+        else:
+            st.info("📭 No hay tarjetas para gestionar.")
+
+    # 3. Zona de Peligro Global
     with st.expander("⚠️ Zona de Peligro (Empezar de 0)", expanded=False):
         st.warning("Esto borrará permanentemente TODAS las compras y abonos. Las tarjetas y personas se mantendrán.")
         
-        seguro = st.checkbox("Entiendo que esto no se puede deshacer")
+        seguro = st.checkbox("Entiendo que esto no se puede deshacer", key="chk_reset_global")
         
         if st.button("🗑️ Reiniciar Historial Financiero", use_container_width=True, type="primary", disabled=not seguro):
             conn = conectar_bd()
