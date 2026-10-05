@@ -37,7 +37,7 @@ def verificar_password():
         st.subheader("Control de Tarjetas Compartidas")
         
         with st.form("form_login"):
-            password_input = st.text_input("Ingresa la contraseña para ingresar:", type="password")
+            password_input = st.text_input("Ingresa la contraseña para ingresar:", type="password", autocomplete="current-password")
             btn_login = st.form_submit_button("Iniciar Sesión 🚀", use_container_width=True)
             
             if btn_login:
