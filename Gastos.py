@@ -488,7 +488,7 @@ elif menu == "🛠️ Gestionar":
                     if st.form_submit_button("Guardar Cambios 💾", use_container_width=True):
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", int(fila_actual['Tarjeta_id'])))
+                        cursor.execute("UPDATE compras SET concepto=%s, fecha=%s WHERE id=%s", (nuevo_concepto, str(nueva_fecha), id_seleccionado))
                         conn.commit()
                         conn.close()
                         st.cache_data.clear()
@@ -513,7 +513,7 @@ elif menu == "🛠️ Gestionar":
                     
                     if es_msi and tipo_borrado == "Borrar TODAS las mensualidades de esta compra":
                         # Se borran todos los registros que comiencen con el concepto base en la misma tarjeta
-                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", fila_actual['Tarjeta_id']))
+                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", int(fila_actual['Tarjeta_id'])))
                         st.session_state.mensaje_exito = f"🗑 Serie completa de '{base_concepto}' eliminada."
                     else:
                         cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
