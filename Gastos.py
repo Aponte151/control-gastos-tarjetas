@@ -195,24 +195,42 @@ if menu == "📊 Dashboard":
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
     compras_periodo AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id WHERE {condicion_c} GROUP BY cp.persona_id, c.tarjeta_id),
-    pagos_periodo AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id),
+    
+    -- Se agregó STRING_AGG para concatenar los conceptos si hay más de 1 pago en el filtro
+    pagos_periodo AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado, STRING_AGG(pa.concepto, ' | ') AS conceptos_pago FROM pagos pa WHERE {condicion_p} GROUP BY pa.persona_id, pa.tarjeta_id),
+    
     compras_global AS (SELECT cp.persona_id, c.tarjeta_id, SUM(cp.monto_asignado) AS consumido_global FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id GROUP BY cp.persona_id, c.tarjeta_id),
     pagos_global AS (SELECT pa.persona_id, pa.tarjeta_id, SUM(pa.monto) AS pagado_global FROM pagos pa GROUP BY pa.persona_id, pa.tarjeta_id)
+    
+    -- Se quitó la columna de Deuda Total y se agregó el Concepto de Pago
     SELECT b.Persona, b.Tarjeta, 
-           ROUND(COALESCE(cp.consumido, 0)::numeric, 2) AS "Consumo Filtro", ROUND(COALESCE(pp.pagado, 0)::numeric, 2) AS "Pagos Filtro",
-           ROUND((COALESCE(cp.consumido, 0) - COALESCE(pp.pagado, 0))::numeric, 2) AS "Saldo del Filtro", ROUND((COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0))::numeric, 2) AS "Deuda Total (Histórica)"
+           ROUND(COALESCE(cp.consumido, 0)::numeric, 2) AS "Consumo Filtro", 
+           ROUND(COALESCE(pp.pagado, 0)::numeric, 2) AS "Pagos Filtro",
+           COALESCE(pp.conceptos_pago, '-') AS "Concepto de Pago",
+           ROUND((COALESCE(cp.consumido, 0) - COALESCE(pp.pagado, 0))::numeric, 2) AS "Saldo del Filtro"
     FROM base_pt b
-    LEFT JOIN compras_periodo cp ON b.persona_id = cp.persona_id AND b.tarjeta_id = cp.tarjeta_id LEFT JOIN pagos_periodo pp ON b.persona_id = pp.persona_id AND b.tarjeta_id = pp.tarjeta_id
-    LEFT JOIN compras_global cg ON b.persona_id = cg.persona_id AND b.tarjeta_id = cg.tarjeta_id LEFT JOIN pagos_global pg ON b.persona_id = pg.persona_id AND b.tarjeta_id = pg.tarjeta_id
+    LEFT JOIN compras_periodo cp ON b.persona_id = cp.persona_id AND b.tarjeta_id = cp.tarjeta_id 
+    LEFT JOIN pagos_periodo pp ON b.persona_id = pp.persona_id AND b.tarjeta_id = pp.tarjeta_id
+    LEFT JOIN compras_global cg ON b.persona_id = cg.persona_id AND b.tarjeta_id = cg.tarjeta_id 
+    LEFT JOIN pagos_global pg ON b.persona_id = pg.persona_id AND b.tarjeta_id = pg.tarjeta_id
     WHERE (COALESCE(cp.consumido, 0) > 0 OR COALESCE(pp.pagado, 0) > 0) OR ('{quincena_filtro}' = 'Mes Completo' AND (COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0)) > 0.01)
     ORDER BY b.Persona, b.Tarjeta
     """
+    
     df_saldos = consultar_datos(query_saldos)
+    
+    # NUEVO: Para obtener el histórico global total y mostrarlo solo en las tarjetas métricas (Metrics)
+    query_global = "SELECT SUM(monto_asignado) FROM compra_participantes"
+    query_pagos_global = "SELECT SUM(monto) FROM pagos"
+    tot_comp = consultar_datos(query_global).iloc[0,0] or 0.0
+    tot_pag = consultar_datos(query_pagos_global).iloc[0,0] or 0.0
+    deuda_historica_total = tot_comp - tot_pag
+
     df_categorias = consultar_datos(f"SELECT categoria, SUM(monto_total) as total FROM compras c WHERE {condicion_c} GROUP BY categoria")
 
     if not df_saldos.empty:
         c1, c2 = st.columns(2)
-        c1.metric("💸 Deuda (Histórica)", f"${df_saldos['Deuda Total (Histórica)'].sum():,.2f}")
+        c1.metric("💸 Deuda (Histórica Total)", f"${deuda_historica_total:,.2f}")
         c2.metric("🎯 Saldo del Filtro", f"${df_saldos['Saldo del Filtro'].sum():,.2f}")
         
         c3, c4 = st.columns(2)
@@ -221,7 +239,12 @@ if menu == "📊 Dashboard":
         st.divider()
         
         st.subheader("📋 Detalle de Saldos")
-        st.dataframe(df_saldos.style.format({"Consumo Filtro": "${:.2f}", "Pagos Filtro": "${:.2f}", "Saldo del Filtro": "${:.2f}", "Deuda Total (Histórica)": "${:.2f}"}), use_container_width=True, hide_index=True)
+        # Se removió la deuda histórica del formato de la tabla
+        st.dataframe(df_saldos.style.format({
+            "Consumo Filtro": "${:.2f}", 
+            "Pagos Filtro": "${:.2f}", 
+            "Saldo del Filtro": "${:.2f}"
+        }), use_container_width=True, hide_index=True)
             
         st.subheader("🛍️ Gastos por Categoría")
         if not df_categorias.empty:
