@@ -264,11 +264,33 @@ elif menu == "🛒 Registrar Compra":
 
     if not tarjetas.empty and not personas.empty:
         with st.expander("➕ Completar detalles de compra", expanded=True):
-            concepto = st.text_input("Concepto (Ej. Chedraui)")
-            monto = st.number_input("Monto Total ($)", min_value=0.01, step=10.0, value=100.0)
-            categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Ropa", "Transporte", "Otros"])
-            msi = st.selectbox("Meses Sin Intereses", [1, 3, 6, 9, 12, 18, 24], index=0)
-            fecha = st.date_input("Fecha de 1ra mensualidad", datetime.today())
+            concepto = st.text_input("Concepto (Ej. Chedraui, Netflix, Gym)")
+            
+            # NUEVO: Selector de tipo de compra
+            tipo_compra = st.radio("Tipo de Compra", ["Pago Único", "Meses Sin Intereses (MSI)", "Suscripción / Recurrente"], horizontal=True)
+            
+            if tipo_compra == "Meses Sin Intereses (MSI)":
+                monto_ingresado = st.number_input("Monto TOTAL de la compra ($)", min_value=0.01, step=10.0, value=1200.0)
+                meses = st.selectbox("Plazo (Meses)", [3, 6, 9, 12, 18, 24], index=0)
+                monto_mensual = monto_ingresado / meses
+                monto_validacion = monto_ingresado
+                label_manual = "Pago TOTAL de"
+            elif tipo_compra == "Suscripción / Recurrente":
+                monto_ingresado = st.number_input("Monto MENSUAL de la suscripción ($)", min_value=0.01, step=10.0, value=150.0)
+                meses = st.number_input("¿Cuántos meses quieres programar?", min_value=2, max_value=60, value=12)
+                monto_mensual = monto_ingresado
+                monto_validacion = monto_ingresado # Validamos contra el monto mensual para que sea intuitivo
+                label_manual = "Pago MENSUAL de"
+            else: # Pago Único
+                monto_ingresado = st.number_input("Monto Total ($)", min_value=0.01, step=10.0, value=100.0)
+                meses = 1
+                monto_mensual = monto_ingresado
+                monto_validacion = monto_ingresado
+                label_manual = "Pago de"
+
+            # Se autoselecciona "Suscripciones" si eliges pago recurrente
+            categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Suscripciones", "Ropa", "Transporte", "Otros"], index=3 if tipo_compra=="Suscripción / Recurrente" else 0)
+            fecha = st.date_input("Fecha del primer cobro", datetime.today())
             tarjeta_sel = st.selectbox("Tarjeta", options=tarjetas["id"], format_func=lambda x: tarjetas.loc[tarjetas["id"]==x, "nombre"].values[0])
             participantes_sel = st.multiselect("Involucrados:", options=personas["id"], format_func=lambda x: personas.loc[personas["id"]==x, "nombre"].values[0])
             
@@ -279,28 +301,38 @@ elif menu == "🛒 Registrar Compra":
             if tipo_division == "Monto Exacto por Persona" and participantes_sel:
                 for p_id in participantes_sel:
                     n_persona = personas.loc[personas["id"]==p_id, "nombre"].values[0]
-                    montos_manuales[p_id] = st.number_input(f"Pago de {n_persona}", min_value=0.0, max_value=monto, step=10.0)
+                    montos_manuales[p_id] = st.number_input(f"{label_manual} {n_persona}", min_value=0.0, max_value=monto_validacion, step=10.0)
 
         if st.button("Guardar Compra 💾", use_container_width=True):
             if concepto and participantes_sel:
                 suma_manual = sum(montos_manuales.values()) if montos_manuales else 0
-                if tipo_division == "Monto Exacto por Persona" and abs(suma_manual - monto) > 0.1:
-                    st.error("La suma de los pagos no coincide con el total.")
+                if tipo_division == "Monto Exacto por Persona" and abs(suma_manual - monto_validacion) > 0.1:
+                    st.error(f"La suma de los pagos no coincide con el monto indicado (${monto_validacion:,.2f}).")
                 else:
                     conn = conectar_bd()
                     cursor = conn.cursor()
-                    monto_por_mes = monto / msi
                     
-                    for mes_actual in range(msi):
-                        fecha_msi = sumar_meses(fecha, mes_actual)
-                        concepto_msi = concepto if msi == 1 else f"{concepto} (Mes {mes_actual+1}/{msi})"
+                    for mes_actual in range(meses):
+                        fecha_registro = sumar_meses(fecha, mes_actual)
                         
+                        # Guardar con el sufijo correcto
+                        if tipo_compra == "Meses Sin Intereses (MSI)":
+                            concepto_final = f"{concepto} (Mes {mes_actual+1}/{meses})"
+                        elif tipo_compra == "Suscripción / Recurrente":
+                            concepto_final = f"{concepto} (Recurrente {mes_actual+1}/{meses})"
+                        else:
+                            concepto_final = concepto
+                            
                         cursor.execute("INSERT INTO compras (concepto, categoria, monto_total, fecha, tarjeta_id) VALUES (%s, %s, %s, %s, %s) RETURNING id", 
-                                       (concepto_msi, categoria, monto_por_mes, str(fecha_msi.date()), tarjeta_sel))
+                                       (concepto_final, categoria, monto_mensual, str(fecha_registro.date()), tarjeta_sel))
                         compra_id = cursor.fetchone()[0]
                         
                         for p_id in participantes_sel:
-                            cuota_persona = (monto_por_mes / len(participantes_sel)) if tipo_division == "Partes Iguales" else (montos_manuales[p_id] / msi)
+                            if tipo_division == "Partes Iguales":
+                                cuota_persona = monto_mensual / len(participantes_sel)
+                            else:
+                                cuota_persona = montos_manuales[p_id] if tipo_compra == "Suscripción / Recurrente" else (montos_manuales[p_id] / meses)
+                                
                             cursor.execute("INSERT INTO compra_participantes (compra_id, persona_id, monto_asignado) VALUES (%s, %s, %s)", 
                                            (compra_id, p_id, cuota_persona))
                     conn.commit()
@@ -516,25 +548,24 @@ elif menu == "🛠️ Gestionar":
                         st.rerun()
                         
             with t_eliminar:
-                # Detectar si el concepto termina con algo como "(Mes 1/12)"
-                es_msi = bool(re.search(r" \(Mes \d+/\d+\)$", fila_actual['Concepto']))
+                # Detectar si el concepto termina con "(Mes 1/12)" o "(Recurrente 1/12)"
+                es_serie = bool(re.search(r" \((Mes|Recurrente) \d+/\d+\)$", fila_actual['Concepto']))
                 
-                if es_msi:
-                    # Extraer el nombre base (ej: "Walmart" de "Walmart (Mes 2/12)")
-                    base_concepto = re.sub(r" \(Mes \d+/\d+\)$", "", fila_actual['Concepto'])
-                    st.warning(f"⚠️ Esta compra es parte de un plan a Meses Sin Intereses: **{base_concepto}**")
-                    tipo_borrado = st.radio("¿Qué deseas borrar?", ["Borrar SOLO este mes", "Borrar TODAS las mensualidades de esta compra"])
+                if es_serie:
+                    base_concepto = re.sub(r" \((Mes|Recurrente) \d+/\d+\)$", "", fila_actual['Concepto'])
+                    st.warning(f"⚠️ Esta compra es parte de una serie programada: **{base_concepto}**")
+                    tipo_borrado = st.radio("¿Qué deseas borrar?", ["Borrar SOLO este mes", "Borrar TODA la serie"])
                 else:
                     tipo_borrado = "Borrar SOLO este mes"
-                    base_concepto = "" # <--- LÍNEA AGREGADA
+                    base_concepto = ""
                     
                 if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
                     conn = conectar_bd()
                     cursor = conn.cursor()
                     
-                    if es_msi and tipo_borrado == "Borrar TODAS las mensualidades de esta compra":
-                        # Se borran todos los registros que comiencen con el concepto base en la misma tarjeta
-                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", int(fila_actual['Tarjeta_id'])))
+                    if es_serie and tipo_borrado == "Borrar TODA la serie":
+                        # Buscamos y borramos registros que comiencen con el concepto base en la misma tarjeta
+                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (%", int(fila_actual['Tarjeta_id'])))
                         st.session_state.mensaje_exito = f"🗑 Serie completa de '{base_concepto}' eliminada."
                     else:
                         cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
