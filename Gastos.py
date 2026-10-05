@@ -316,7 +316,15 @@ elif menu == "🛒 Registrar Compra":
             categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Suscripciones", "Ropa", "Transporte", "Otros"], index=3 if tipo_compra=="Suscripción / Recurrente" else 0)
             fecha = st.date_input("Fecha del primer cobro", datetime.today())
             tarjeta_sel = st.selectbox("Tarjeta", options=tarjetas["id"], format_func=lambda x: tarjetas.loc[tarjetas["id"]==x, "nombre"].values[0])
-            participantes_sel = st.multiselect("Involucrados:", options=personas["id"], format_func=lambda x: personas.loc[personas["id"]==x, "nombre"].values[0])
+            st.write("👥 **¿Quiénes participan en la compra?**")
+            cols_personas = st.columns(len(personas))
+            participantes_sel = []
+            
+            for i, (_, row_p) in enumerate(personas.iterrows()):
+                with cols_personas[i]:
+                    # Crea un checkbox por cada persona. Si quieres que estén marcados por defecto, agrega: value=True
+                    if st.checkbox(row_p["nombre"], key=f"chk_{row_p['id']}"):
+                        participantes_sel.append(row_p["id"])
             
             st.divider()
             tipo_division = st.radio("¿Cómo se paga?", ["Partes Iguales", "Monto Exacto por Persona"], horizontal=True)
