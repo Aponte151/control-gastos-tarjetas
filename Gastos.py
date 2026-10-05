@@ -238,7 +238,7 @@ if menu == "📊 Dashboard":
     tot_pag = consultar_datos(query_pagos_global).iloc[0,0] or 0.0
     deuda_historica_total = tot_comp - tot_pag
 
-    df_categorias = consultar_datos(f"SELECT categoria, SUM(monto_total) as total FROM compras c WHERE {condicion_c} GROUP BY categoria")
+    df_categorias = consultar_datos(f"SELECT c.categoria, SUM(c.monto_total) as total FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id WHERE {condicion_c} GROUP BY c.categoria")
 
     if not df_saldos.empty:
         c1, c2 = st.columns(2)
