@@ -353,18 +353,40 @@ elif menu == "💸 Liquidar Deuda":
 
 # --- 4. REPORTES ---
 elif menu == "📝 Reportes":
-    q_det = """
+    # NUEVO: Filtros de búsqueda para reportes
+    with st.expander("🔍 Filtros de Búsqueda", expanded=True):
+        c_f1, c_f2 = st.columns(2)
+        with c_f1:
+            mes_filtro = st.text_input("Mes a buscar (YYYY-MM) - Deja en blanco para todos", value=datetime.now().strftime("%Y-%m"), key="rep_mes")
+        with c_f2:
+            quincena_filtro = st.selectbox("Quincena", ["Todas", "1ra Quincena (1-15)", "2da Quincena (16-31)"], key="rep_quin")
+
+    # Construir las condiciones SQL
+    cond_c, cond_p = "1=1", "1=1"
+    if mes_filtro.strip():
+        cond_c += f" AND TO_CHAR(c.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
+        cond_p += f" AND TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
+    if "1ra" in quincena_filtro:
+        cond_c += " AND EXTRACT(DAY FROM c.fecha::DATE) <= 15"
+        cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
+    elif "2da" in quincena_filtro:
+        cond_c += " AND EXTRACT(DAY FROM c.fecha::DATE) > 15"
+        cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
+
+    q_det = f"""
     SELECT 
         TO_CHAR(c.fecha::DATE, 'YYYY-MM') AS mes,
         CASE WHEN EXTRACT(DAY FROM c.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
         c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, 'Compra' AS tipo, cp.monto_asignado AS monto
     FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id
+    WHERE {cond_c}
     UNION ALL
     SELECT 
         TO_CHAR(pa.fecha::DATE, 'YYYY-MM') AS mes,
         CASE WHEN EXTRACT(DAY FROM pa.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena,
         pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, 'Pago' AS tipo, pa.monto AS monto
     FROM pagos pa JOIN tarjetas t ON pa.tarjeta_id = t.id JOIN personas p ON pa.persona_id = p.id
+    WHERE {cond_p}
     ORDER BY fecha DESC
     """
     df_rep = consultar_datos(q_det)
@@ -395,12 +417,11 @@ elif menu == "📝 Reportes":
         st.subheader("💬 Generar WhatsApp")
         if not df_deudas.empty:
             df_deudas.columns = [col.capitalize() for col in df_deudas.columns]
-            
             p_wa = st.selectbox("Selecciona para generar cobro:", df_deudas['Persona'].unique())
             df_filtro = df_rep[df_rep['Persona'] == p_wa]
             sp = df_deudas[df_deudas['Persona'] == p_wa].iloc[0]
             
-            msg = f"Hola {p_wa}, este es tu estado de cuenta:\n\n"
+            msg = f"Hola {p_wa}, este es tu estado de cuenta filtrado:\n\n"
             periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
             for _, row in periodos.iterrows():
                 m, q = row['Mes'], row['Quincena']
@@ -419,33 +440,34 @@ elif menu == "📝 Reportes":
             
             if st.button("Enviar Cobro al Grupo 🚀", use_container_width=True, type="primary"):
                 with st.spinner("Enviando mensaje al grupo..."):
-                    url = st.secrets["GREEN_API_URL"]
-                    grupo_id = st.secrets["WHATSAPP_GROUP_ID"]
+                    url = st.secrets.get("GREEN_API_URL", "")
+                    grupo_id = st.secrets.get("WHATSAPP_GROUP_ID", "")
                     
-                    payload = {
-                        "chatId": f"{grupo_id}@g.us",
-                        "message": msg
-                    }
-                    
-                    try:
-                        respuesta = requests.post(url, json=payload)
-                        if respuesta.status_code == 200:
-                            st.success("✅ ¡Mensaje enviado exitosamente al grupo!")
-                        else:
-                            st.error(f"❌ Error al enviar. Código: {respuesta.status_code}")
-                    except Exception as e:
-                        st.error(f"❌ Ocurrió un error de conexión: {e}")
+                    if url and grupo_id:
+                        payload = {"chatId": f"{grupo_id}@g.us", "message": msg}
+                        try:
+                            respuesta = requests.post(url, json=payload, verify=False)
+                            if respuesta.status_code == 200:
+                                st.success("✅ ¡Mensaje enviado exitosamente al grupo!")
+                            else:
+                                st.error(f"❌ Error al enviar. Código: {respuesta.status_code}")
+                        except Exception as e:
+                            st.error(f"❌ Ocurrió un error de conexión: {e}")
+                    else:
+                        st.error("Faltan credenciales de WhatsApp en secrets.toml")
                         
-            # Mantenemos el cuadro de texto colapsado por si la API falla
             with st.expander("Ver texto generado (Respaldo manual)"):
                 st.code(msg, language="text")
 
 # --- 5. GESTIÓN (EDITAR / BORRAR) ---
 elif menu == "🛠️ Gestionar":
+    import re # Necesario para buscar los (Mes X/Y)
+    
     tipo_gestion = st.radio("¿Qué deseas gestionar?", ["🛒 Compras", "💸 Pagos / Abonos"], horizontal=True)
     
     if tipo_gestion == "🛒 Compras":
-        df_del = consultar_datos("SELECT c.id, c.fecha, c.concepto, c.monto_total, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.fecha DESC")
+        # Traemos también tarjeta_id para asegurarnos de no borrar compras con el mismo nombre en otra tarjeta
+        df_del = consultar_datos("SELECT c.id, c.fecha, c.concepto, c.monto_total, c.tarjeta_id, t.nombre as tarjeta FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id ORDER BY c.fecha DESC")
         
         if not df_del.empty:
             df_del.columns = [col.capitalize() for col in df_del.columns]
@@ -474,14 +496,32 @@ elif menu == "🛠️ Gestionar":
                         st.rerun()
                         
             with t_eliminar:
+                # Detectar si el concepto termina con algo como "(Mes 1/12)"
+                es_msi = bool(re.search(r" \(Mes \d+/\d+\)$", fila_actual['Concepto']))
+                
+                if es_msi:
+                    # Extraer el nombre base (ej: "Walmart" de "Walmart (Mes 2/12)")
+                    base_concepto = re.sub(r" \(Mes \d+/\d+\)$", "", fila_actual['Concepto'])
+                    st.warning(f"⚠️ Esta compra es parte de un plan a Meses Sin Intereses: **{base_concepto}**")
+                    tipo_borrado = st.radio("¿Qué deseas borrar?", ["Borrar SOLO este mes", "Borrar TODAS las mensualidades de esta compra"])
+                else:
+                    tipo_borrado = "Borrar SOLO este mes"
+                    
                 if st.button("🚨 Eliminar Compra Definitivamente", use_container_width=True, type="primary"):
                     conn = conectar_bd()
                     cursor = conn.cursor()
-                    cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
+                    
+                    if es_msi and tipo_borrado == "Borrar TODAS las mensualidades de esta compra":
+                        # Se borran todos los registros que comiencen con el concepto base en la misma tarjeta
+                        cursor.execute("DELETE FROM compras WHERE concepto LIKE %s AND tarjeta_id = %s", (f"{base_concepto} (Mes %", fila_actual['Tarjeta_id']))
+                        st.session_state.mensaje_exito = f"🗑 Serie completa de '{base_concepto}' eliminada."
+                    else:
+                        cursor.execute("DELETE FROM compras WHERE id = %s", (id_seleccionado,))
+                        st.session_state.mensaje_exito = "🗑 Compra individual eliminada."
+                        
                     conn.commit()
                     conn.close()
                     st.cache_data.clear()
-                    st.session_state.mensaje_exito = "🗑️️ Compra eliminada."
                     st.rerun()
         else:
             st.info("📭 Aún no hay compras registradas para gestionar.")
@@ -502,7 +542,7 @@ elif menu == "🛠️ Gestionar":
                 conn.commit()
                 conn.close()
                 st.cache_data.clear()
-                st.session_state.mensaje_exito = "🗑️ Abono eliminado de la base de datos."
+                st.session_state.mensaje_exito = "🗑️ Abono eliminado."
                 st.rerun()
         else:
             st.info("📭 Aún no hay abonos registrados para gestionar.")
