@@ -181,8 +181,12 @@ if st.session_state.get('cerrar_sidebar', False):
     st.session_state.cerrar_sidebar = False
 
 # 📅 UX/UI: Generador Automático del Selector de Meses
+anio_actual = datetime.now().year
 mes_actual_str = datetime.now().strftime("%Y-%m")
-rango_meses = pd.date_range(start="2023-01-01", end=(datetime.now() + pd.DateOffset(years=2)), freq='MS').strftime("%Y-%m").tolist()
+
+# Cambiamos "2023-01-01" para que siempre inicie dinámicamente en el año en curso
+rango_meses = pd.date_range(start=f"{anio_actual}-01-01", end=(datetime.now() + pd.DateOffset(years=2)), freq='MS').strftime("%Y-%m").tolist()
+
 if mes_actual_str not in rango_meses: 
     rango_meses.append(mes_actual_str)
     rango_meses = sorted(list(set(rango_meses)))
