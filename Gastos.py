@@ -180,26 +180,52 @@ if st.session_state.get('cerrar_sidebar', False):
     )
     st.session_state.cerrar_sidebar = False
 
+# 📅 UX/UI: Generador Automático del Selector de Meses
+mes_actual_str = datetime.now().strftime("%Y-%m")
+rango_meses = pd.date_range(start="2023-01-01", end=(datetime.now() + pd.DateOffset(years=2)), freq='MS').strftime("%Y-%m").tolist()
+if mes_actual_str not in rango_meses: 
+    rango_meses.append(mes_actual_str)
+    rango_meses = sorted(list(set(rango_meses)))
+idx_actual = rango_meses.index(mes_actual_str)
+
 # --- 1. DASHBOARD ---
 if menu == "📊 Dashboard":
     with st.expander("🔍 Mostrar/Ocultar Filtros de Tiempo", expanded=False):
-        c_f1, c_f2 = st.columns(2)
+        c_f1, c_f2 = st.columns([1, 1.5])
         with c_f1:
-            mes_filtro = st.text_input("Filtrar por Mes (YYYY-MM)", value=datetime.now().strftime("%Y-%m"))
+            mes_filtro = st.selectbox("Filtrar por Mes", rango_meses, index=idx_actual)
         with c_f2:
-            quincena_filtro = st.selectbox("Filtrar por Quincena", ["Mes Completo", "1ra Quincena (1-15)", "2da Quincena (16-31)"])
+            st.write("Filtrar por Quincena")
+            cc1, cc2, cc3 = st.columns(3)
+            chk_mes = cc1.checkbox("Mes Completo", value=True)
+            chk_1ra = cc2.checkbox("1ra Quincena")
+            chk_2da = cc3.checkbox("2da Quincena")
+
+    # 🧠 Lógica inteligente para los Checkboxes
+    if chk_mes or (chk_1ra and chk_2da):
+        quincena_filtro = "Mes Completo"
+    elif chk_1ra:
+        quincena_filtro = "1ra Quincena (1-15)"
+    elif chk_2da:
+        quincena_filtro = "2da Quincena (16-31)"
+    else:
+        quincena_filtro = "Ninguna"
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
 
     condicion_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
     condicion_p = f"TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
     
-    if "1ra" in quincena_filtro:
+    if quincena_filtro == "1ra Quincena (1-15)":
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
-    elif "2da" in quincena_filtro:
+    elif quincena_filtro == "2da Quincena (16-31)":
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
+    elif quincena_filtro == "Ninguna":
+        # Evita que se muestre data si todo está desmarcado
+        condicion_c += " AND 1=0"
+        condicion_p += " AND 1=0"
 
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
@@ -265,7 +291,6 @@ if menu == "📊 Dashboard":
         
         st.subheader("📋 Detalle de Saldos")
         
-        # 🎨 UX/UI: Tablas interactivas de Column Config
         st.dataframe(
             df_saldos, 
             use_container_width=True, 
@@ -296,7 +321,7 @@ if menu == "📊 Dashboard":
                 fig_trend.update_layout(margin=dict(t=10, b=10, l=10, r=10), barmode='stack')
                 st.plotly_chart(fig_trend, use_container_width=True)
     else:
-        st.info(f"No hay movimientos registrados ni deudas para {quincena_filtro} de {mes_filtro}.")
+        st.info(f"No hay movimientos registrados ni deudas para el filtro seleccionado.")
 
 # --- 1.5 PROYECCIONES ---
 elif menu == "📈 Proyecciones":
@@ -321,7 +346,6 @@ elif menu == "🛒 Registrar Compra":
     personas = consultar_datos("SELECT id, nombre FROM personas")
 
     if not tarjetas.empty and not personas.empty:
-        # 🎨 UX/UI: Contenedor con borde tipo "Card"
         with st.container(border=True):
             st.subheader("➕ Detalles de la Compra")
             concepto = st.text_input("Concepto (Ej. Chedraui, Netflix, Gym)")
@@ -374,7 +398,6 @@ elif menu == "🛒 Registrar Compra":
                     montos_manuales[p_id] = m_val
                     suma_manual += m_val
                 
-                # 🎨 UX/UI: Asistente Dinámico de División de Cuentas
                 if monto_validacion > 0:
                     diferencia = monto_validacion - suma_manual
                     if abs(diferencia) < 0.01:
@@ -384,7 +407,6 @@ elif menu == "🛒 Registrar Compra":
                     else:
                         st.warning(f"⚠️ Te pasaste de la cuenta por **${abs(diferencia):,.2f}**.")
 
-        # 🎨 UX/UI: Botón Principal Modernizado
         if st.button("Guardar Compra", icon="💾", use_container_width=True, type="primary"):
             if monto_validacion <= 0:
                 st.error("⚠️ Por favor, ingresa el monto de la compra antes de guardar.")
@@ -491,28 +513,51 @@ elif menu == "📝 Reportes":
 
     with st.container(border=True):
         st.subheader("🔍 Filtros de Búsqueda")
-        c_f1, c_f2, c_f3 = st.columns(3)
-        with c_f1: mes_filtro = st.text_input("Mes (YYYY-MM)", value=datetime.now().strftime("%Y-%m"), key="rep_mes")
-        with c_f2: quincena_filtro = st.selectbox("Quincena", ["Todas", "1ra Quincena (1-15)", "2da Quincena (16-31)"], key="rep_quin")
-        with c_f3: tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
+        c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
+        with c_f1: 
+            rango_meses_rep = ["Todos"] + rango_meses
+            idx_actual_rep = rango_meses_rep.index(mes_actual_str)
+            mes_filtro = st.selectbox("Mes", rango_meses_rep, index=idx_actual_rep, key="rep_mes")
+        with c_f2: 
+            st.write("Quincena")
+            cc1, cc2, cc3 = st.columns(3)
+            chk_mes_r = cc1.checkbox("Todas", value=True, key="rep_chk_todas")
+            chk_1ra_r = cc2.checkbox("1ra", key="rep_chk_1ra")
+            chk_2da_r = cc3.checkbox("2da", key="rep_chk_2da")
+        with c_f3: 
+            tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
+
+    # Lógica inteligente de checkboxes para reportes
+    if chk_mes_r or (chk_1ra_r and chk_2da_r):
+        quincena_filtro = "Todas"
+    elif chk_1ra_r:
+        quincena_filtro = "1ra Quincena (1-15)"
+    elif chk_2da_r:
+        quincena_filtro = "2da Quincena (16-31)"
+    else:
+        quincena_filtro = "Ninguna"
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
     cond_c, cond_p = "1=1", "1=1"
     
-    if mes_filtro.strip():
+    if mes_filtro != "Todos":
         cond_c += f" AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
         cond_p += f" AND TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
-    if "1ra" in quincena_filtro:
+        
+    if quincena_filtro == "1ra Quincena (1-15)":
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
         cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
-    elif "2da" in quincena_filtro:
+    elif quincena_filtro == "2da Quincena (16-31)":
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
         cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
+    elif quincena_filtro == "Ninguna":
+        cond_c += " AND 1=0"
+        cond_p += " AND 1=0"
+        
     if tarjeta_filtro != "Todas":
         cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
         cond_p += f" AND t.nombre = '{tarjeta_filtro}'"
 
-    # 🎨 UX/UI: Aplicando emoji directamente desde SQL para las tablas
     q_det = f"""
     SELECT TO_CHAR({calc_pago}, 'YYYY-MM') AS mes, CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, '🛒 Compra' AS tipo, cp.monto_asignado AS monto
     FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id WHERE {cond_c}
@@ -525,7 +570,6 @@ elif menu == "📝 Reportes":
     if not df_rep.empty:
         df_rep.columns = [col.capitalize() for col in df_rep.columns]
         
-        # 🎨 UX/UI: DataFrame Nativo de alto rendimiento
         st.dataframe(
             df_rep, 
             use_container_width=True, 
