@@ -184,7 +184,6 @@ if st.session_state.get('cerrar_sidebar', False):
 anio_actual = datetime.now().year
 mes_actual_str = datetime.now().strftime("%Y-%m")
 
-# Cambiamos "2023-01-01" para que siempre inicie dinámicamente en el año en curso
 rango_meses = pd.date_range(start=f"{anio_actual}-01-01", end=(datetime.now() + pd.DateOffset(years=2)), freq='MS').strftime("%Y-%m").tolist()
 
 if mes_actual_str not in rango_meses: 
@@ -205,7 +204,6 @@ if menu == "📊 Dashboard":
             chk_1ra = cc2.checkbox("1ra Quincena")
             chk_2da = cc3.checkbox("2da Quincena")
 
-    # 🧠 Lógica inteligente para los Checkboxes
     if chk_mes or (chk_1ra and chk_2da):
         quincena_filtro = "Mes Completo"
     elif chk_1ra:
@@ -227,7 +225,6 @@ if menu == "📊 Dashboard":
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
         condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
     elif quincena_filtro == "Ninguna":
-        # Evita que se muestre data si todo está desmarcado
         condicion_c += " AND 1=0"
         condicion_p += " AND 1=0"
 
@@ -350,54 +347,58 @@ elif menu == "🛒 Registrar Compra":
     personas = consultar_datos("SELECT id, nombre FROM personas")
 
     if not tarjetas.empty and not personas.empty:
+        if 'form_key' not in st.session_state:
+            st.session_state.form_key = 0
+        fk = st.session_state.form_key
+
         with st.container(border=True):
             st.subheader("➕ Detalles de la Compra")
-            concepto = st.text_input("Concepto (Ej. Chedraui, Netflix, Gym)")
-            tipo_compra = st.radio("Tipo de Compra", ["Pago Único", "Meses Sin Intereses (MSI)", "Suscripción / Recurrente"], horizontal=True)
+            concepto = st.text_input("Concepto (Ej. Chedraui, Netflix, Gym)", key=f"c_concepto_{fk}")
+            tipo_compra = st.radio("Tipo de Compra", ["Pago Único", "Meses Sin Intereses (MSI)", "Suscripción / Recurrente"], horizontal=True, key=f"c_tipo_{fk}")
             
             if tipo_compra == "Meses Sin Intereses (MSI)":
-                m_in = st.number_input("Monto TOTAL de la compra ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00")
+                m_in = st.number_input("Monto TOTAL de la compra ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00", key=f"c_m_msi_{fk}")
                 monto_ingresado = m_in if m_in is not None else 0.0
-                meses = st.selectbox("Plazo (Meses)", [3, 4, 6, 9, 12, 18, 24], index=0)
+                meses = st.selectbox("Plazo (Meses)", [3, 4, 6, 9, 12, 18, 24], index=0, key=f"c_p_msi_{fk}")
                 monto_mensual = (monto_ingresado / meses) if meses else 0.0
                 monto_validacion = monto_ingresado
                 label_manual = "Pago TOTAL de"
             elif tipo_compra == "Suscripción / Recurrente":
-                m_in = st.number_input("Monto MENSUAL de la suscripción ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00")
+                m_in = st.number_input("Monto MENSUAL de la suscripción ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00", key=f"c_m_rec_{fk}")
                 monto_ingresado = m_in if m_in is not None else 0.0
-                meses = st.number_input("¿Cuántos meses quieres programar?", min_value=2, max_value=60, value=12)
+                meses = st.number_input("¿Cuántos meses quieres programar?", min_value=2, max_value=60, value=12, key=f"c_p_rec_{fk}")
                 monto_mensual = monto_ingresado
                 monto_validacion = monto_ingresado 
                 label_manual = "Pago MENSUAL de"
             else: 
-                m_in = st.number_input("Monto Total ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00")
+                m_in = st.number_input("Monto Total ($)", min_value=0.01, step=10.0, value=None, placeholder="0.00", key=f"c_m_uni_{fk}")
                 monto_ingresado = m_in if m_in is not None else 0.0
                 meses = 1
                 monto_mensual = monto_ingresado
                 monto_validacion = monto_ingresado
                 label_manual = "Pago de"
 
-            categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Suscripciones", "Ropa", "Transporte", "Otros"], index=3 if tipo_compra=="Suscripción / Recurrente" else 0)
-            fecha = st.date_input("Fecha del primer cobro", datetime.today())
-            tarjeta_sel = st.selectbox("Tarjeta", options=tarjetas["id"], format_func=lambda x: tarjetas.loc[tarjetas["id"]==x, "nombre"].values[0])
+            categoria = st.selectbox("Categoría", ["Supermercado", "Restaurantes", "Servicios", "Suscripciones", "Ropa", "Transporte", "Otros"], index=3 if tipo_compra=="Suscripción / Recurrente" else 0, key=f"c_cat_{fk}")
+            fecha = st.date_input("Fecha del primer cobro", datetime.today(), key=f"c_fecha_{fk}")
+            tarjeta_sel = st.selectbox("Tarjeta", options=tarjetas["id"], format_func=lambda x: tarjetas.loc[tarjetas["id"]==x, "nombre"].values[0], key=f"c_tarj_{fk}")
             
             st.write("👥 **¿Quiénes participan en la compra?**")
             cols_personas = st.columns(len(personas))
             participantes_sel = []
             for i, (_, row_p) in enumerate(personas.iterrows()):
                 with cols_personas[i]:
-                    if st.checkbox(row_p["nombre"], key=f"chk_{row_p['id']}"):
+                    if st.checkbox(row_p["nombre"], key=f"chk_{row_p['id']}_{fk}"):
                         participantes_sel.append(row_p["id"])
             
             st.divider()
-            tipo_division = st.radio("¿Cómo se paga?", ["Partes Iguales", "Monto Exacto por Persona"], horizontal=True)
+            tipo_division = st.radio("¿Cómo se paga?", ["Partes Iguales", "Monto Exacto por Persona"], horizontal=True, key=f"c_div_{fk}")
             
             montos_manuales = {}
             if tipo_division == "Monto Exacto por Persona" and participantes_sel:
                 suma_manual = 0.0
                 for p_id in participantes_sel:
                     n_persona = personas.loc[personas["id"]==p_id, "nombre"].values[0]
-                    v_in = st.number_input(f"{label_manual} {n_persona}", min_value=0.0, step=10.0, value=None, placeholder="0.00")
+                    v_in = st.number_input(f"{label_manual} {n_persona}", min_value=0.0, step=10.0, value=None, placeholder="0.00", key=f"c_man_{p_id}_{fk}")
                     m_val = v_in if v_in is not None else 0.0
                     montos_manuales[p_id] = m_val
                     suma_manual += m_val
@@ -441,6 +442,7 @@ elif menu == "🛒 Registrar Compra":
                         conn.commit()
                         st.cache_data.clear()
                         st.session_state.mensaje_exito = f"¡Compra '{concepto}' guardada!"
+                        st.session_state.form_key += 1
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al guardar: {e}"
                     finally:
@@ -458,55 +460,145 @@ elif menu == "💸 Liquidar Deuda":
     personas_pago = consultar_datos("SELECT id, nombre FROM personas")
 
     if not tarjetas_pago.empty and not personas_pago.empty:
-        p_pago = st.selectbox("¿Quién va a pagar?", options=personas_pago["id"], format_func=lambda x: personas_pago.loc[personas_pago["id"]==x, "nombre"].values[0])
-        t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
         
-        deuda_actual = 0.0
-        try:
-            conn = conectar_bd()
-            cursor = conn.cursor()
-            cursor.execute("SELECT SUM(cp.monto_asignado) FROM compra_participantes cp JOIN compras c ON cp.compra_id = c.id WHERE cp.persona_id = %s AND c.tarjeta_id = %s", (p_pago, t_pago))
-            total_comprado = cursor.fetchone()[0] or 0.0
-            cursor.execute("SELECT SUM(monto) FROM pagos WHERE persona_id = %s AND tarjeta_id = %s", (p_pago, t_pago))
-            total_pagado = cursor.fetchone()[0] or 0.0
-            deuda_actual = total_comprado - total_pagado
-        except Exception as e:
-            st.error(f"Error consultando saldos: {e}")
-        finally:
-            if 'conn' in locals() and conn: conn.close()
+        # 🎨 UX/UI: Selector de modo de pago
+        modo_pago = st.radio("Elige cómo vas a registrar el pago:", ["🧾 Palomear cargos por Quincena", "💳 Abono Libre a Tarjeta"], horizontal=True)
+        st.divider()
         
-        if deuda_actual > 0: st.info(f"💰 Deuda actual: **${deuda_actual:,.2f}**")
-        else: st.success("✅ Sin deudas pendientes en esta tarjeta.")
+        p_pago = st.selectbox("¿Quién está pagando?", options=personas_pago["id"], format_func=lambda x: personas_pago.loc[personas_pago["id"]==x, "nombre"].values[0])
+        
+        # ==========================================
+        # MODO 1: PAGO DETALLADO POR QUINCENA
+        # ==========================================
+        if modo_pago == "🧾 Palomear cargos por Quincena":
+            st.info("Filtra la quincena para ver los cargos de esta persona. Palomea los que vas a liquidar y la app hará el resto.")
             
-        with st.container(border=True):
-            st.subheader("💸 Detalles del Abono / Devolución")
-            concepto_pago = st.text_input("Concepto (Opcional)", value="Abono a deuda")
-            tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
+            c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
+            with c_f1: 
+                mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes")
+            with c_f2: 
+                quincena_filtro_pago = st.selectbox("Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)", "Mes Completo"], key="pago_quin")
+            with c_f3: 
+                nombres_tarjetas_p = ["Todas"] + tarjetas_pago['nombre'].tolist()
+                tarjeta_filtro_pago = st.selectbox("Tarjeta", nombres_tarjetas_p, key="pago_tarj")
+
+            # Fórmula para proyectar la fecha de pago
+            calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
             
-            if tipo_pago == "Liquidar deuda completa":
-                m_pago = deuda_actual
-            else:
-                m_p_in = st.number_input("Monto ($)", min_value=0.01, step=50.0, value=None, placeholder="0.00")
-                m_pago = m_p_in if m_p_in is not None else 0.0
+            cond_c = f"cp.persona_id = {p_pago} AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro_pago}'"
+            if quincena_filtro_pago == "1ra Quincena (1-15)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
+            elif quincena_filtro_pago == "2da Quincena (16-31)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+            if tarjeta_filtro_pago != "Todas": cond_c += f" AND t.nombre = '{tarjeta_filtro_pago}'"
                 
-            f_pago = st.date_input("Fecha del Pago", datetime.today())
-        
-        if st.button("Registrar Movimiento", icon="✅", use_container_width=True, type="primary"):
-            if m_pago > 0:
-                try:
-                    conn = conectar_bd()
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago), concepto_pago))
-                    conn.commit()
-                    st.cache_data.clear() 
-                    st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} registrado."
-                except Exception as e:
-                    st.session_state.mensaje_error = f"Error al pagar: {e}"
-                finally:
-                    if 'conn' in locals() and conn: conn.close()
-                st.rerun()
+            q_cargos = f"""
+            SELECT c.id as compra_id, t.id as tarjeta_id, c.concepto as "Concepto", t.nombre as "Tarjeta", c.fecha as "Fecha Compra", cp.monto_asignado as "Monto"
+            FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN tarjetas t ON c.tarjeta_id = t.id 
+            WHERE {cond_c} ORDER BY {calc_pago} ASC
+            """
+            df_cargos = consultar_datos(q_cargos)
+            
+            if not df_cargos.empty:
+                df_cargos.insert(0, "Pagar", False) # Agregamos la columna de Checkbox vacía
+                
+                st.write("**Selecciona los cargos que te están pagando:**")
+                # 🎨 UX/UI: Data Editor interactivo para hacer check en los cargos
+                edited_df = st.data_editor(
+                    df_cargos,
+                    hide_index=True,
+                    column_config={
+                        "Pagar": st.column_config.CheckboxColumn("Pagar ✔️", default=False),
+                        "compra_id": None, # Ocultamos IDs internos
+                        "tarjeta_id": None,
+                        "Monto": st.column_config.NumberColumn("Monto ($)", format="$%.2f")
+                    },
+                    disabled=["Concepto", "Tarjeta", "Fecha Compra", "Monto"], # Evita que editen el nombre o monto por error
+                    use_container_width=True
+                )
+                
+                # Filtramos solo los que el usuario marcó
+                seleccionados = edited_df[edited_df["Pagar"] == True]
+                total_a_pagar = seleccionados["Monto"].sum()
+                
+                st.info(f"💰 Total seleccionado a cobrar: **${total_a_pagar:,.2f}**")
+                
+                if st.button("Registrar Pago de Cargos Seleccionados", icon="✅", type="primary", use_container_width=True, disabled=(total_a_pagar == 0)):
+                    try:
+                        conn = conectar_bd()
+                        cursor = conn.cursor()
+                        fecha_pago = str(datetime.today().date())
+                        
+                        # Magia: Agrupamos por tarjeta por si seleccionó cargos de diferentes plásticos a la vez
+                        for tarj_id, group in seleccionados.groupby("tarjeta_id"):
+                            monto_tarjeta = group["Monto"].sum()
+                            conceptos_pagados = ", ".join(group["Concepto"].tolist())
+                            concepto_final = f"Pago de: {conceptos_pagados}"[:200] # Máximo 200 letras
+                            
+                            cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", 
+                                           (p_pago, int(tarj_id), float(monto_tarjeta), fecha_pago, concepto_final))
+                        
+                        conn.commit()
+                        st.cache_data.clear()
+                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado con éxito."
+                    except Exception as e:
+                        st.session_state.mensaje_error = f"Error al registrar: {e}"
+                    finally:
+                        if 'conn' in locals() and conn: conn.close()
+                    st.rerun()
             else:
-                st.error("⚠️ Por favor, ingresa un monto válido antes de continuar.")
+                st.warning(f"📭 No hay cargos pendientes para esta persona en la quincena seleccionada.")
+
+        # ==========================================
+        # MODO 2: ABONO LIBRE (Original)
+        # ==========================================
+        else:
+            t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
+            
+            deuda_actual = 0.0
+            try:
+                conn = conectar_bd()
+                cursor = conn.cursor()
+                cursor.execute("SELECT SUM(cp.monto_asignado) FROM compra_participantes cp JOIN compras c ON cp.compra_id = c.id WHERE cp.persona_id = %s AND c.tarjeta_id = %s", (p_pago, t_pago))
+                total_comprado = cursor.fetchone()[0] or 0.0
+                cursor.execute("SELECT SUM(monto) FROM pagos WHERE persona_id = %s AND tarjeta_id = %s", (p_pago, t_pago))
+                total_pagado = cursor.fetchone()[0] or 0.0
+                deuda_actual = total_comprado - total_pagado
+            except Exception as e:
+                st.error(f"Error consultando saldos: {e}")
+            finally:
+                if 'conn' in locals() and conn: conn.close()
+            
+            if deuda_actual > 0: st.info(f"💰 Deuda total actual en esta tarjeta: **${deuda_actual:,.2f}**")
+            else: st.success("✅ Sin deudas pendientes en esta tarjeta.")
+                
+            with st.container(border=True):
+                st.subheader("💸 Detalles del Abono Libre")
+                concepto_pago = st.text_input("Concepto (Opcional)", value="Abono a cuenta general")
+                tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
+                
+                if tipo_pago == "Liquidar deuda completa":
+                    m_pago = deuda_actual
+                else:
+                    m_p_in = st.number_input("Monto ($)", min_value=0.01, step=50.0, value=None, placeholder="0.00")
+                    m_pago = m_p_in if m_p_in is not None else 0.0
+                    
+                f_pago = st.date_input("Fecha del Pago", datetime.today())
+            
+            if st.button("Registrar Abono", icon="✅", use_container_width=True, type="primary"):
+                if m_pago > 0:
+                    try:
+                        conn = conectar_bd()
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago), concepto_pago))
+                        conn.commit()
+                        st.cache_data.clear() 
+                        st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} registrado."
+                    except Exception as e:
+                        st.session_state.mensaje_error = f"Error al pagar: {e}"
+                    finally:
+                        if 'conn' in locals() and conn: conn.close()
+                    st.rerun()
+                else:
+                    st.error("⚠️ Por favor, ingresa un monto válido antes de continuar.")
     else:
         st.info("📭 Aún no tienes tarjetas o personas registradas.")
 
