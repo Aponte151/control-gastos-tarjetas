@@ -81,11 +81,23 @@ def inicializar_bd():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pagos (
                 id SERIAL PRIMARY KEY, persona_id INTEGER, tarjeta_id INTEGER, monto REAL, fecha DATE,
+                concepto TEXT DEFAULT 'Abono a deuda',
+                mes_aplicacion TEXT, quincena_aplicacion TEXT,
                 FOREIGN KEY (persona_id) REFERENCES personas (id) ON DELETE CASCADE,
                 FOREIGN KEY (tarjeta_id) REFERENCES tarjetas (id) ON DELETE CASCADE
             );
         """)
+        
+        # MIGRACIÓN: Agregar columnas si la tabla ya existía y auto-completar pagos antiguos
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS concepto TEXT DEFAULT 'Abono a deuda';")
+        cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS mes_aplicacion TEXT;")
+        cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS quincena_aplicacion TEXT;")
+        cursor.execute("""
+            UPDATE pagos 
+            SET mes_aplicacion = TO_CHAR(fecha, 'YYYY-MM'), 
+                quincena_aplicacion = CASE WHEN EXTRACT(DAY FROM fecha) <= 15 THEN '1ra Quincena (1-15)' ELSE '2da Quincena (16-31)' END 
+            WHERE mes_aplicacion IS NULL;
+        """)
         
         usuarios_base = ["Julio", "Karol", "Omar", "Martha"]
         for usr in usuarios_base:
@@ -198,35 +210,18 @@ if menu == "📊 Dashboard":
         with c_f1:
             mes_filtro = st.selectbox("Filtrar por Mes", rango_meses, index=idx_actual)
         with c_f2:
-            st.write("Filtrar por Quincena")
-            cc1, cc2, cc3 = st.columns(3)
-            chk_mes = cc1.checkbox("Mes Completo", value=True)
-            chk_1ra = cc2.checkbox("1ra Quincena")
-            chk_2da = cc3.checkbox("2da Quincena")
-
-    if chk_mes or (chk_1ra and chk_2da):
-        quincena_filtro = "Mes Completo"
-    elif chk_1ra:
-        quincena_filtro = "1ra Quincena (1-15)"
-    elif chk_2da:
-        quincena_filtro = "2da Quincena (16-31)"
-    else:
-        quincena_filtro = "Ninguna"
+            quincena_filtro = st.radio("Filtrar por Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True)
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
 
     condicion_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-    condicion_p = f"TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
+    # Los pagos ahora se filtran por su periodo de APLICACIÓN, no por la fecha de depósito
+    condicion_p = f"pa.mes_aplicacion = '{mes_filtro}' AND pa.quincena_aplicacion = '{quincena_filtro}'"
     
     if quincena_filtro == "1ra Quincena (1-15)":
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-        condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
     elif quincena_filtro == "2da Quincena (16-31)":
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
-        condicion_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
-    elif quincena_filtro == "Ninguna":
-        condicion_c += " AND 1=0"
-        condicion_p += " AND 1=0"
 
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
@@ -250,7 +245,7 @@ if menu == "📊 Dashboard":
     LEFT JOIN pagos_periodo pp ON b.persona_id = pp.persona_id AND b.tarjeta_id = pp.tarjeta_id
     LEFT JOIN compras_global cg ON b.persona_id = cg.persona_id AND b.tarjeta_id = cg.tarjeta_id 
     LEFT JOIN pagos_global pg ON b.persona_id = pg.persona_id AND b.tarjeta_id = pg.tarjeta_id
-    WHERE (COALESCE(cp.consumido, 0) > 0 OR COALESCE(pp.pagado, 0) > 0) OR ('{quincena_filtro}' = 'Mes Completo' AND (COALESCE(cg.consumido_global, 0) - COALESCE(pg.pagado_global, 0)) > 0.01)
+    WHERE (COALESCE(cp.consumido, 0) > 0 OR COALESCE(pp.pagado, 0) > 0)
     ORDER BY b.Persona, b.Tarjeta
     """
     df_saldos = consultar_datos(query_saldos)
@@ -461,7 +456,6 @@ elif menu == "💸 Liquidar Deuda":
 
     if not tarjetas_pago.empty and not personas_pago.empty:
         
-        # 🎨 UX/UI: Selector de modo de pago
         modo_pago = st.radio("Elige cómo vas a registrar el pago:", ["🧾 Palomear cargos por Quincena", "💳 Abono Libre a Tarjeta"], horizontal=True)
         st.divider()
         
@@ -471,23 +465,23 @@ elif menu == "💸 Liquidar Deuda":
         # MODO 1: PAGO DETALLADO POR QUINCENA
         # ==========================================
         if modo_pago == "🧾 Palomear cargos por Quincena":
-            st.info("Filtra la quincena para ver los cargos de esta persona. Palomea los que vas a liquidar y la app hará el resto.")
+            st.info("Filtra la quincena. Palomea los cargos que se liquidan, y la app los asignará al reporte exacto de esta quincena, sin importar cuándo se pagaron realmente.")
             
             c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
             with c_f1: 
                 mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes")
             with c_f2: 
-                quincena_filtro_pago = st.selectbox("Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)", "Mes Completo"], key="pago_quin")
+                quincena_filtro_pago = st.radio("Quincena a liquidar", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="pago_quin")
             with c_f3: 
                 nombres_tarjetas_p = ["Todas"] + tarjetas_pago['nombre'].tolist()
                 tarjeta_filtro_pago = st.selectbox("Tarjeta", nombres_tarjetas_p, key="pago_tarj")
 
-            # Fórmula para proyectar la fecha de pago
             calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
             
             cond_c = f"cp.persona_id = {p_pago} AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro_pago}'"
             if quincena_filtro_pago == "1ra Quincena (1-15)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
             elif quincena_filtro_pago == "2da Quincena (16-31)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+            
             if tarjeta_filtro_pago != "Todas": cond_c += f" AND t.nombre = '{tarjeta_filtro_pago}'"
                 
             q_cargos = f"""
@@ -498,24 +492,22 @@ elif menu == "💸 Liquidar Deuda":
             df_cargos = consultar_datos(q_cargos)
             
             if not df_cargos.empty:
-                df_cargos.insert(0, "Pagar", False) # Agregamos la columna de Checkbox vacía
+                df_cargos.insert(0, "Pagar", False) 
                 
                 st.write("**Selecciona los cargos que te están pagando:**")
-                # 🎨 UX/UI: Data Editor interactivo para hacer check en los cargos
                 edited_df = st.data_editor(
                     df_cargos,
                     hide_index=True,
                     column_config={
                         "Pagar": st.column_config.CheckboxColumn("Pagar ✔️", default=False),
-                        "compra_id": None, # Ocultamos IDs internos
+                        "compra_id": None, 
                         "tarjeta_id": None,
                         "Monto": st.column_config.NumberColumn("Monto ($)", format="$%.2f")
                     },
-                    disabled=["Concepto", "Tarjeta", "Fecha Compra", "Monto"], # Evita que editen el nombre o monto por error
+                    disabled=["Concepto", "Tarjeta", "Fecha Compra", "Monto"], 
                     use_container_width=True
                 )
                 
-                # Filtramos solo los que el usuario marcó
                 seleccionados = edited_df[edited_df["Pagar"] == True]
                 total_a_pagar = seleccionados["Monto"].sum()
                 
@@ -525,30 +517,30 @@ elif menu == "💸 Liquidar Deuda":
                     try:
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        fecha_pago = str(datetime.today().date())
+                        fecha_pago = str(datetime.today().date()) # La fecha real del depósito
                         
-                        # Magia: Agrupamos por tarjeta por si seleccionó cargos de diferentes plásticos a la vez
                         for tarj_id, group in seleccionados.groupby("tarjeta_id"):
                             monto_tarjeta = group["Monto"].sum()
                             conceptos_pagados = ", ".join(group["Concepto"].tolist())
-                            concepto_final = f"Pago de: {conceptos_pagados}"[:200] # Máximo 200 letras
+                            concepto_final = f"Pago de: {conceptos_pagados}"[:200] 
                             
-                            cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", 
-                                           (p_pago, int(tarj_id), float(monto_tarjeta), fecha_pago, concepto_final))
+                            # Se inserta asignándolo directamente al mes/quincena de aplicación, ignorando el mes real
+                            cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto, mes_aplicacion, quincena_aplicacion) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+                                           (p_pago, int(tarj_id), float(monto_tarjeta), fecha_pago, concepto_final, mes_filtro_pago, quincena_filtro_pago))
                         
                         conn.commit()
                         st.cache_data.clear()
-                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado con éxito."
+                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado con éxito en el reporte de {mes_filtro_pago}."
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al registrar: {e}"
                     finally:
                         if 'conn' in locals() and conn: conn.close()
                     st.rerun()
             else:
-                st.warning(f"📭 No hay cargos pendientes para esta persona en la quincena seleccionada.")
+                st.warning(f"📭 No hay cargos para esta persona en la quincena seleccionada.")
 
         # ==========================================
-        # MODO 2: ABONO LIBRE (Original)
+        # MODO 2: ABONO LIBRE (Original modificado)
         # ==========================================
         else:
             t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
@@ -573,25 +565,32 @@ elif menu == "💸 Liquidar Deuda":
             with st.container(border=True):
                 st.subheader("💸 Detalles del Abono Libre")
                 concepto_pago = st.text_input("Concepto (Opcional)", value="Abono a cuenta general")
-                tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
                 
+                st.write("**¿En qué reporte quieres que aparezca este pago?**")
+                c_a1, c_a2 = st.columns(2)
+                with c_a1: mes_ap = st.selectbox("Aplica para el Mes", rango_meses, index=idx_actual, key="ap_mes")
+                with c_a2: quin_ap = st.radio("Aplica para Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="ap_quin")
+                st.divider()
+
+                tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
                 if tipo_pago == "Liquidar deuda completa":
                     m_pago = deuda_actual
                 else:
                     m_p_in = st.number_input("Monto ($)", min_value=0.01, step=50.0, value=None, placeholder="0.00")
                     m_pago = m_p_in if m_p_in is not None else 0.0
                     
-                f_pago = st.date_input("Fecha del Pago", datetime.today())
+                f_pago = st.date_input("Fecha real del depósito", datetime.today())
             
             if st.button("Registrar Abono", icon="✅", use_container_width=True, type="primary"):
                 if m_pago > 0:
                     try:
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto) VALUES (%s, %s, %s, %s, %s)", (p_pago, t_pago, m_pago, str(f_pago), concepto_pago))
+                        cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto, mes_aplicacion, quincena_aplicacion) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
+                                       (p_pago, t_pago, m_pago, str(f_pago), concepto_pago, mes_ap, quin_ap))
                         conn.commit()
                         st.cache_data.clear() 
-                        st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} registrado."
+                        st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} asignado a {quin_ap} de {mes_ap}."
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al pagar: {e}"
                     finally:
@@ -599,6 +598,32 @@ elif menu == "💸 Liquidar Deuda":
                     st.rerun()
                 else:
                     st.error("⚠️ Por favor, ingresa un monto válido antes de continuar.")
+
+        # ==========================================
+        # HISTORIAL DE PAGOS (Nuevo)
+        # ==========================================
+        st.divider()
+        st.subheader(f"🕒 Historial de Pagos")
+        tarjeta_nom_sel = "Todas las tarjetas" if modo_pago == "🧾 Palomear cargos por Quincena" and tarjeta_filtro_pago == "Todas" else tarjetas_pago.loc[tarjetas_pago["id"]==(t_pago if modo_pago == "💳 Abono Libre a Tarjeta" else int(tarjeta_filtro_pago) if tarjeta_filtro_pago != "Todas" else -1), "nombre"].values[0] if modo_pago != "🧾 Palomear cargos por Quincena" or tarjeta_filtro_pago != "Todas" else "Todas"
+        
+        filtro_hist_t = f"AND tarjeta_id = {t_pago}" if modo_pago == "💳 Abono Libre a Tarjeta" else ""
+        
+        df_hist = consultar_datos(f"""
+            SELECT fecha as "Fecha Depósito", monto as "Monto", concepto as "Concepto", 
+                   mes_aplicacion as "Mes Reporte", quincena_aplicacion as "Quincena Reporte" 
+            FROM pagos WHERE persona_id = {p_pago} {filtro_hist_t} ORDER BY id DESC LIMIT 15
+        """)
+        
+        if not df_hist.empty:
+            st.dataframe(
+                df_hist, 
+                use_container_width=True, 
+                hide_index=True, 
+                column_config={"Monto": st.column_config.NumberColumn("Monto", format="$%.2f")}
+            )
+        else:
+            st.info("Aún no hay abonos recientes registrados para esta persona.")
+
     else:
         st.info("📭 Aún no tienes tarjetas o personas registradas.")
 
@@ -611,44 +636,22 @@ elif menu == "📝 Reportes":
         st.subheader("🔍 Filtros de Búsqueda")
         c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
         with c_f1: 
-            rango_meses_rep = ["Todos"] + rango_meses
-            idx_actual_rep = rango_meses_rep.index(mes_actual_str)
-            mes_filtro = st.selectbox("Mes", rango_meses_rep, index=idx_actual_rep, key="rep_mes")
+            mes_filtro = st.selectbox("Mes", rango_meses, index=idx_actual, key="rep_mes")
         with c_f2: 
-            st.write("Quincena")
-            cc1, cc2, cc3 = st.columns(3)
-            chk_mes_r = cc1.checkbox("Todas", value=True, key="rep_chk_todas")
-            chk_1ra_r = cc2.checkbox("1ra", key="rep_chk_1ra")
-            chk_2da_r = cc3.checkbox("2da", key="rep_chk_2da")
+            quincena_filtro = st.radio("Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="rep_quin")
         with c_f3: 
             tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
 
-    # Lógica inteligente de checkboxes para reportes
-    if chk_mes_r or (chk_1ra_r and chk_2da_r):
-        quincena_filtro = "Todas"
-    elif chk_1ra_r:
-        quincena_filtro = "1ra Quincena (1-15)"
-    elif chk_2da_r:
-        quincena_filtro = "2da Quincena (16-31)"
-    else:
-        quincena_filtro = "Ninguna"
-
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
-    cond_c, cond_p = "1=1", "1=1"
     
-    if mes_filtro != "Todos":
-        cond_c += f" AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-        cond_p += f" AND TO_CHAR(pa.fecha::DATE, 'YYYY-MM') = '{mes_filtro}'"
-        
+    cond_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
+    # Los pagos se filtran directamente por su asignación, sin importar la fecha en que se hicieron
+    cond_p = f"pa.mes_aplicacion = '{mes_filtro}' AND pa.quincena_aplicacion = '{quincena_filtro}'"
+    
     if quincena_filtro == "1ra Quincena (1-15)":
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-        cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) <= 15"
     elif quincena_filtro == "2da Quincena (16-31)":
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
-        cond_p += " AND EXTRACT(DAY FROM pa.fecha::DATE) > 15"
-    elif quincena_filtro == "Ninguna":
-        cond_c += " AND 1=0"
-        cond_p += " AND 1=0"
         
     if tarjeta_filtro != "Todas":
         cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
@@ -658,7 +661,7 @@ elif menu == "📝 Reportes":
     SELECT TO_CHAR({calc_pago}, 'YYYY-MM') AS mes, CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, '🛒 Compra' AS tipo, cp.monto_asignado AS monto
     FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id WHERE {cond_c}
     UNION ALL
-    SELECT TO_CHAR(pa.fecha::DATE, 'YYYY-MM') AS mes, CASE WHEN EXTRACT(DAY FROM pa.fecha::DATE) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, '✅ Pago' AS tipo, pa.monto AS monto
+    SELECT pa.mes_aplicacion AS mes, CASE WHEN pa.quincena_aplicacion LIKE '1ra%' THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, '✅ Pago' AS tipo, pa.monto AS monto
     FROM pagos pa JOIN tarjetas t ON pa.tarjeta_id = t.id JOIN personas p ON pa.persona_id = p.id WHERE {cond_p} ORDER BY fecha DESC
     """
     df_rep = consultar_datos(q_det)
@@ -796,10 +799,10 @@ elif menu == "🛠️ Gestionar":
         else: st.info("📭 Aún no hay compras registradas.")
             
     else: 
-        df_del_p = consultar_datos("SELECT pa.id, pa.fecha, pa.concepto, pa.monto, p.nombre as persona, t.nombre as tarjeta FROM pagos pa JOIN personas p ON pa.persona_id = p.id JOIN tarjetas t ON pa.tarjeta_id = t.id ORDER BY pa.fecha DESC")
+        df_del_p = consultar_datos("SELECT pa.id, pa.fecha, pa.concepto, pa.monto, p.nombre as persona, t.nombre as tarjeta, pa.mes_aplicacion, pa.quincena_aplicacion FROM pagos pa JOIN personas p ON pa.persona_id = p.id JOIN tarjetas t ON pa.tarjeta_id = t.id ORDER BY pa.fecha DESC")
         if not df_del_p.empty:
             df_del_p.columns = [col.capitalize() for col in df_del_p.columns]
-            opciones_p = [f"ID: {r['Id']} | {r['Fecha']} | {r['Persona']} abonó ${r['Monto']} ({r['Concepto']})" for _, r in df_del_p.iterrows()]
+            opciones_p = [f"ID: {r['Id']} | {r['Mes_aplicacion']} {r['Quincena_aplicacion'][:3]} | {r['Persona']} abonó ${r['Monto']} ({r['Concepto']})" for _, r in df_del_p.iterrows()]
             seleccion_p = st.selectbox("Selecciona el abono a eliminar:", opciones_p)
             id_p_seleccionado = re.search(r"ID: (\d+)", seleccion_p).group(1)
             
