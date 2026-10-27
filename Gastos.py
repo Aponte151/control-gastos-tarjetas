@@ -73,6 +73,7 @@ def inicializar_bd():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS compra_participantes (
                 compra_id INTEGER, persona_id INTEGER, monto_asignado REAL,
+                estado_pago TEXT DEFAULT 'Pendiente',
                 PRIMARY KEY (compra_id, persona_id),
                 FOREIGN KEY (compra_id) REFERENCES compras (id) ON DELETE CASCADE,
                 FOREIGN KEY (persona_id) REFERENCES personas (id) ON DELETE CASCADE
@@ -88,9 +89,14 @@ def inicializar_bd():
             );
         """)
         
+        # MIGRACIONES INTEGRADAS
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS concepto TEXT DEFAULT 'Abono a deuda';")
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS mes_aplicacion TEXT;")
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS quincena_aplicacion TEXT;")
+        
+        # NUEVA MIGRACIÓN: Estado del pago individual en cada producto
+        cursor.execute("ALTER TABLE compra_participantes ADD COLUMN IF NOT EXISTS estado_pago TEXT DEFAULT 'Pendiente';")
+        
         cursor.execute("""
             UPDATE pagos 
             SET mes_aplicacion = TO_CHAR(fecha, 'YYYY-MM'), 
@@ -476,13 +482,13 @@ elif menu == "💸 Liquidar Deuda":
         # MODO 1: PAGO DETALLADO POR QUINCENA
         # ==========================================
         if modo_pago == "🧾 Palomear cargos por Quincena":
-            st.info("Filtra la quincena. Palomea los cargos que se liquidan, y la app los asignará al reporte exacto de esta quincena, sin importar cuándo se pagaron realmente.")
+            st.info("Filtra la quincena. Palomea los cargos específicos que se liquidan para marcarlos como pagados en los reportes.")
             
             c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
             with c_f1: 
-                mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes", format_func=formato_mes)
+                mes_filtro_pago = st.selectbox("Mes de los cargos", rango_meses, index=idx_actual, key="pago_mes", format_func=formato_mes)
             with c_f2: 
-                st.write("Quincena a liquidar")
+                st.write("Quincena de los cargos")
                 cc1, cc2 = st.columns(2)
                 chk_1ra_p = cc1.checkbox("1ra Quincena", value=True, key="pag_chk_1ra")
                 chk_2da_p = cc2.checkbox("2da Quincena", value=True, key="pag_chk_2da")
@@ -504,18 +510,19 @@ elif menu == "💸 Liquidar Deuda":
             
             if tarjeta_filtro_pago != "Todas": cond_c += f" AND t.nombre = '{tarjeta_filtro_pago}'"
                 
+            # Solo traemos los pendientes para no pagar dos veces
             q_cargos = f"""
             SELECT c.id as compra_id, t.id as tarjeta_id, c.concepto as "Concepto", t.nombre as "Tarjeta", c.fecha as "Fecha Compra", cp.monto_asignado as "Monto",
             CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena (1-15)' ELSE '2da Quincena (16-31)' END as quincena_cargo
             FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN tarjetas t ON c.tarjeta_id = t.id 
-            WHERE {cond_c} ORDER BY {calc_pago} ASC
+            WHERE {cond_c} AND cp.estado_pago = 'Pendiente' ORDER BY {calc_pago} ASC
             """
             df_cargos = consultar_datos(q_cargos)
             
             if not df_cargos.empty:
                 df_cargos.insert(0, "Pagar", False) 
                 
-                st.write("**Selecciona los cargos que te están pagando:**")
+                st.write("**Selecciona los cargos específicos que te están pagando:**")
                 edited_df = st.data_editor(
                     df_cargos,
                     hide_index=True,
@@ -541,6 +548,12 @@ elif menu == "💸 Liquidar Deuda":
                         cursor = conn.cursor()
                         fecha_pago = str(datetime.today().date()) 
                         
+                        # 1. ACTUALIZA LOS PRODUCTOS A 'LIQUIDADO'
+                        compra_ids = seleccionados["compra_id"].tolist()
+                        format_strings = ','.join(['%s'] * len(compra_ids))
+                        cursor.execute(f"UPDATE compra_participantes SET estado_pago = 'Liquidado' WHERE persona_id = %s AND compra_id IN ({format_strings})", [p_pago] + compra_ids)
+
+                        # 2. INSERTA EL PAGO PARA QUE EL DASHBOARD NO SE ROMPA
                         for (tarj_id, quin_cargo), group in seleccionados.groupby(["tarjeta_id", "quincena_cargo"]):
                             monto_tarjeta = group["Monto"].sum()
                             conceptos_pagados = ", ".join(group["Concepto"].tolist())
@@ -551,17 +564,17 @@ elif menu == "💸 Liquidar Deuda":
                         
                         conn.commit()
                         st.cache_data.clear()
-                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado y segmentado con éxito."
+                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado. Productos liquidados con éxito."
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al registrar: {e}"
                     finally:
                         if 'conn' in locals() and conn: conn.close()
                     st.rerun()
             else:
-                st.warning(f"📭 No hay cargos para esta persona en la quincena seleccionada.")
+                st.warning(f"📭 Excelente. No hay cargos PENDIENTES para esta persona en la quincena seleccionada.")
 
         # ==========================================
-        # MODO 2: ABONO LIBRE (Original modificado)
+        # MODO 2: ABONO LIBRE
         # ==========================================
         else:
             t_pago = st.selectbox("¿A qué tarjeta abona?", options=tarjetas_pago["id"], format_func=lambda x: tarjetas_pago.loc[tarjetas_pago["id"]==x, "nombre"].values[0])
@@ -596,7 +609,6 @@ elif menu == "💸 Liquidar Deuda":
                     chk_1_ab = ca1.checkbox("1ra Quincena", value=True, key="ab_chk_1")
                     chk_2_ab = ca2.checkbox("2da Quincena", value=True, key="ab_chk_2")
                 
-                # Asignación inteligente para abono libre
                 if chk_1_ab and chk_2_ab:
                     quin_ap = "Mes Completo"
                 elif chk_1_ab:
@@ -642,7 +654,6 @@ elif menu == "💸 Liquidar Deuda":
         # ==========================================
         st.divider()
         st.subheader(f"🕒 Historial de Pagos")
-        tarjeta_nom_sel = "Todas las tarjetas" if modo_pago == "🧾 Palomear cargos por Quincena" and tarjeta_filtro_pago == "Todas" else tarjetas_pago.loc[tarjetas_pago["id"]==(t_pago if modo_pago == "💳 Abono Libre a Tarjeta" else int(tarjeta_filtro_pago) if tarjeta_filtro_pago != "Todas" else -1), "nombre"].values[0] if modo_pago != "🧾 Palomear cargos por Quincena" or tarjeta_filtro_pago != "Todas" else "Todas"
         
         filtro_hist_t = f"AND tarjeta_id = {t_pago}" if modo_pago == "💳 Abono Libre a Tarjeta" else ""
         
@@ -674,9 +685,7 @@ elif menu == "📝 Reportes":
         st.subheader("🔍 Filtros de Búsqueda")
         c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
         with c_f1: 
-            rango_meses_rep = ["Todos"] + rango_meses
-            idx_actual_rep = rango_meses_rep.index(mes_actual_str)
-            mes_filtro = st.selectbox("Mes", rango_meses_rep, index=idx_actual_rep, key="rep_mes", format_func=formato_mes)
+            mes_filtro = st.selectbox("Mes", rango_meses, index=idx_actual, key="rep_mes", format_func=formato_mes)
         with c_f2: 
             st.write("Quincena")
             cc1, cc2 = st.columns(2)
@@ -687,34 +696,29 @@ elif menu == "📝 Reportes":
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
     
-    cond_c, cond_p = "1=1", "1=1"
+    cond_c = "1=1"
     
     if mes_filtro != "Todos":
         cond_c += f" AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-        cond_p += f" AND pa.mes_aplicacion = '{mes_filtro}'"
         
     if chk_1ra_r and chk_2da_r:
         pass 
     elif chk_1ra_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-        cond_p += " AND pa.quincena_aplicacion IN ('1ra Quincena (1-15)', 'Mes Completo')"
     elif chk_2da_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
-        cond_p += " AND pa.quincena_aplicacion IN ('2da Quincena (16-31)', 'Mes Completo')"
     else:
         cond_c += " AND 1=0"
-        cond_p += " AND 1=0"
         
     if tarjeta_filtro != "Todas":
         cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
-        cond_p += f" AND t.nombre = '{tarjeta_filtro}'"
 
+    # Ahora solo buscamos compras. Ya no mezclamos "pagos" en la lista porque los productos ya dicen si están pagados o no.
     q_det = f"""
-    SELECT TO_CHAR({calc_pago}, 'YYYY-MM') AS mes, CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, '🛒 Compra' AS tipo, cp.monto_asignado AS monto
+    SELECT TO_CHAR({calc_pago}, 'YYYY-MM') AS mes, CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, 
+    c.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, c.concepto AS concepto, cp.monto_asignado AS monto, cp.estado_pago as estado
     FROM compras c JOIN tarjetas t ON c.tarjeta_id = t.id JOIN compra_participantes cp ON c.id = cp.compra_id JOIN personas p ON cp.persona_id = p.id WHERE {cond_c}
-    UNION ALL
-    SELECT pa.mes_aplicacion AS mes, CASE WHEN pa.quincena_aplicacion LIKE '1ra%' THEN '1ra Quincena' ELSE '2da Quincena' END AS quincena, pa.fecha AS fecha, p.nombre AS persona, t.nombre AS tarjeta, COALESCE(pa.concepto, 'Abono a deuda') AS concepto, '✅ Pago' AS tipo, pa.monto AS monto
-    FROM pagos pa JOIN tarjetas t ON pa.tarjeta_id = t.id JOIN personas p ON pa.persona_id = p.id WHERE {cond_p} ORDER BY fecha DESC
+    ORDER BY {calc_pago} DESC
     """
     df_rep = consultar_datos(q_det)
 
@@ -736,42 +740,34 @@ elif menu == "📝 Reportes":
         p_wa = st.selectbox("Selecciona para generar cobro:", df_rep['Persona'].unique())
         df_filtro = df_rep[df_rep['Persona'] == p_wa]
         
-        tot_consumido = df_filtro[df_filtro['Tipo'] == '🛒 Compra']['Monto'].sum()
-        tot_abonado = df_filtro[df_filtro['Tipo'] == '✅ Pago']['Monto'].sum()
-        saldo_pendiente = tot_consumido - tot_abonado
-        
-        # 🧠 UX/UI: Cálculo de Deuda Histórica Global para el Reporte
-        hist_df = consultar_datos(f"""
-            SELECT 
-                (SELECT COALESCE(SUM(monto_asignado), 0) FROM compra_participantes WHERE persona_id = (SELECT id FROM personas WHERE nombre = '{p_wa}')) as tot_comp, 
-                (SELECT COALESCE(SUM(monto), 0) FROM pagos WHERE persona_id = (SELECT id FROM personas WHERE nombre = '{p_wa}')) as tot_pag
-        """)
-        deuda_restante_global = hist_df['tot_comp'][0] - hist_df['tot_pag'][0]
+        # 🧠 UX/UI: Cálculo exacto basado en el estado del producto
+        tot_consumido = df_filtro['Monto'].sum()
+        tot_liquidado = df_filtro[df_filtro['Estado'] == 'Liquidado']['Monto'].sum()
+        saldo_pendiente = df_filtro[df_filtro['Estado'] == 'Pendiente']['Monto'].sum()
         
         tarjeta_msg = f" en la tarjeta {tarjeta_filtro}" if tarjeta_filtro != "Todas" else ""
         msg = f"Hola {p_wa}, este es tu estado de cuenta filtrado{tarjeta_msg}:\n\n"
+        
         periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
         for _, row in periodos.iterrows():
             m, q = row['Mes'], row['Quincena']
             msg += f"📅 *{m} | {q}*\n"
             for _, f in df_filtro[(df_filtro['Mes'] == m) & (df_filtro['Quincena'] == q)].iterrows():
-                msg += f"  {f['Tipo'].split(' ')[0]} {f['Concepto']} ({f['Tarjeta']}): {'-' if f['Tipo']=='✅ Pago' else ''}${f['Monto']:.2f}\n"
+                # Formato visual de pagado o pendiente
+                tachado = "~" if f['Estado'] == 'Liquidado' else ""
+                check = "✅" if f['Estado'] == 'Liquidado' else "🛒"
+                msg += f"  {check} {tachado}{f['Concepto']} ({f['Tarjeta']}){tachado}: ${f['Monto']:.2f}\n"
             msg += "\n"
         
-        msg += f"💰 *Total Consumido del periodo:* ${tot_consumido:.2f}\n💰 *Total Abonado del periodo:* ${tot_abonado:.2f}\n"
+        msg += f"💰 *Total del periodo:* ${tot_consumido:.2f}\n"
         
-        if saldo_pendiente > 0: msg += f"👉 *Falta pagar del periodo: ${saldo_pendiente:.2f}*\n"
-        elif saldo_pendiente < 0: msg += f"✨ *Pagaste de más en este periodo: ${abs(saldo_pendiente):.2f}*\n"
-        else: msg += "✅ *Este periodo está totalmente liquidado*\n"
-        
-        # Agregamos la Inteligencia Financiera Global al mensaje
-        msg += f"\n🏦 *ESTADO GENERAL DE TU CUENTA*\n"
-        if deuda_restante_global > 0.01:
-            msg += f"🔴 *DEUDA TOTAL RESTANTE:* ${deuda_restante_global:,.2f}"
-        elif deuda_restante_global < -0.01:
-            msg += f"🟢 *SALDO GLOBAL A FAVOR:* ${abs(deuda_restante_global):,.2f}"
-        else:
-            msg += f"✅ *CUENTA GLOBAL LIQUIDADA*"
+        if tot_liquidado > 0:
+            msg += f"✅ *Ya liquidado:* ${tot_liquidado:.2f}\n"
+            
+        if saldo_pendiente > 0: 
+            msg += f"👉 *FALTA PAGAR:* ${saldo_pendiente:.2f}\n"
+        else: 
+            msg += "✨ *TODO PAGADO EN ESTE PERIODO* ✨\n"
         
         st.divider()
         if st.button("Enviar Cobro al Grupo", icon="🚀", use_container_width=True, type="primary"):
