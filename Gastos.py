@@ -88,7 +88,6 @@ def inicializar_bd():
             );
         """)
         
-        # MIGRACIÓN: Agregar columnas si la tabla ya existía y auto-completar pagos antiguos
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS concepto TEXT DEFAULT 'Abono a deuda';")
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS mes_aplicacion TEXT;")
         cursor.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS quincena_aplicacion TEXT;")
@@ -210,18 +209,28 @@ if menu == "📊 Dashboard":
         with c_f1:
             mes_filtro = st.selectbox("Filtrar por Mes", rango_meses, index=idx_actual)
         with c_f2:
-            quincena_filtro = st.radio("Filtrar por Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True)
+            st.write("Filtrar por Quincena")
+            cc1, cc2 = st.columns(2)
+            chk_1ra = cc1.checkbox("1ra Quincena", value=True)
+            chk_2da = cc2.checkbox("2da Quincena", value=True)
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
 
+    # Corrección: Evaluación directa contra la asignación de pagos
     condicion_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-    # Los pagos ahora se filtran por su periodo de APLICACIÓN, no por la fecha de depósito
-    condicion_p = f"pa.mes_aplicacion = '{mes_filtro}' AND pa.quincena_aplicacion = '{quincena_filtro}'"
+    condicion_p = f"pa.mes_aplicacion = '{mes_filtro}'"
     
-    if quincena_filtro == "1ra Quincena (1-15)":
+    if chk_1ra and chk_2da:
+        pass # Pasan todos los de este mes
+    elif chk_1ra:
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-    elif quincena_filtro == "2da Quincena (16-31)":
+        condicion_p += " AND pa.quincena_aplicacion = '1ra Quincena (1-15)'"
+    elif chk_2da:
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+        condicion_p += " AND pa.quincena_aplicacion = '2da Quincena (16-31)'"
+    else:
+        condicion_c += " AND 1=0"
+        condicion_p += " AND 1=0"
 
     query_saldos = f"""
     WITH base_pt AS (SELECT p.id as persona_id, p.nombre as Persona, t.id as tarjeta_id, t.nombre as Tarjeta FROM personas p CROSS JOIN tarjetas t),
@@ -471,7 +480,10 @@ elif menu == "💸 Liquidar Deuda":
             with c_f1: 
                 mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes")
             with c_f2: 
-                quincena_filtro_pago = st.radio("Quincena a liquidar", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="pago_quin")
+                st.write("Quincena a liquidar")
+                cc1, cc2 = st.columns(2)
+                chk_1ra_p = cc1.checkbox("1ra Quincena", value=True, key="pag_chk_1ra")
+                chk_2da_p = cc2.checkbox("2da Quincena", value=True, key="pag_chk_2da")
             with c_f3: 
                 nombres_tarjetas_p = ["Todas"] + tarjetas_pago['nombre'].tolist()
                 tarjeta_filtro_pago = st.selectbox("Tarjeta", nombres_tarjetas_p, key="pago_tarj")
@@ -479,13 +491,20 @@ elif menu == "💸 Liquidar Deuda":
             calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
             
             cond_c = f"cp.persona_id = {p_pago} AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro_pago}'"
-            if quincena_filtro_pago == "1ra Quincena (1-15)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-            elif quincena_filtro_pago == "2da Quincena (16-31)": cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+            if chk_1ra_p and chk_2da_p:
+                pass
+            elif chk_1ra_p:
+                cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
+            elif chk_2da_p:
+                cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+            else:
+                cond_c += " AND 1=0"
             
             if tarjeta_filtro_pago != "Todas": cond_c += f" AND t.nombre = '{tarjeta_filtro_pago}'"
                 
             q_cargos = f"""
-            SELECT c.id as compra_id, t.id as tarjeta_id, c.concepto as "Concepto", t.nombre as "Tarjeta", c.fecha as "Fecha Compra", cp.monto_asignado as "Monto"
+            SELECT c.id as compra_id, t.id as tarjeta_id, c.concepto as "Concepto", t.nombre as "Tarjeta", c.fecha as "Fecha Compra", cp.monto_asignado as "Monto",
+            CASE WHEN EXTRACT(DAY FROM {calc_pago}) <= 15 THEN '1ra Quincena (1-15)' ELSE '2da Quincena (16-31)' END as quincena_cargo
             FROM compras c JOIN compra_participantes cp ON c.id = cp.compra_id JOIN tarjetas t ON c.tarjeta_id = t.id 
             WHERE {cond_c} ORDER BY {calc_pago} ASC
             """
@@ -502,6 +521,7 @@ elif menu == "💸 Liquidar Deuda":
                         "Pagar": st.column_config.CheckboxColumn("Pagar ✔️", default=False),
                         "compra_id": None, 
                         "tarjeta_id": None,
+                        "quincena_cargo": None, # Oculta la columna técnica
                         "Monto": st.column_config.NumberColumn("Monto ($)", format="$%.2f")
                     },
                     disabled=["Concepto", "Tarjeta", "Fecha Compra", "Monto"], 
@@ -517,20 +537,20 @@ elif menu == "💸 Liquidar Deuda":
                     try:
                         conn = conectar_bd()
                         cursor = conn.cursor()
-                        fecha_pago = str(datetime.today().date()) # La fecha real del depósito
+                        fecha_pago = str(datetime.today().date()) 
                         
-                        for tarj_id, group in seleccionados.groupby("tarjeta_id"):
+                        # Magia: Agrupa por tarjeta y por quincena para asignar el pago exactamente donde pertenece
+                        for (tarj_id, quin_cargo), group in seleccionados.groupby(["tarjeta_id", "quincena_cargo"]):
                             monto_tarjeta = group["Monto"].sum()
                             conceptos_pagados = ", ".join(group["Concepto"].tolist())
                             concepto_final = f"Pago de: {conceptos_pagados}"[:200] 
                             
-                            # Se inserta asignándolo directamente al mes/quincena de aplicación, ignorando el mes real
                             cursor.execute("INSERT INTO pagos (persona_id, tarjeta_id, monto, fecha, concepto, mes_aplicacion, quincena_aplicacion) VALUES (%s, %s, %s, %s, %s, %s, %s)", 
-                                           (p_pago, int(tarj_id), float(monto_tarjeta), fecha_pago, concepto_final, mes_filtro_pago, quincena_filtro_pago))
+                                           (p_pago, int(tarj_id), float(monto_tarjeta), fecha_pago, concepto_final, mes_filtro_pago, quin_cargo))
                         
                         conn.commit()
                         st.cache_data.clear()
-                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado con éxito en el reporte de {mes_filtro_pago}."
+                        st.session_state.mensaje_exito = f"Pago de ${total_a_pagar:,.2f} registrado y segmentado con éxito."
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al registrar: {e}"
                     finally:
@@ -638,20 +658,29 @@ elif menu == "📝 Reportes":
         with c_f1: 
             mes_filtro = st.selectbox("Mes", rango_meses, index=idx_actual, key="rep_mes")
         with c_f2: 
-            quincena_filtro = st.radio("Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="rep_quin")
+            st.write("Quincena")
+            cc1, cc2 = st.columns(2)
+            chk_1ra_r = cc1.checkbox("1ra Quincena", value=True, key="rep_chk_1ra")
+            chk_2da_r = cc2.checkbox("2da Quincena", value=True, key="rep_chk_2da")
         with c_f3: 
             tarjeta_filtro = st.selectbox("Tarjeta", nombres_tarjetas, key="rep_tarj")
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
     
     cond_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-    # Los pagos se filtran directamente por su asignación, sin importar la fecha en que se hicieron
-    cond_p = f"pa.mes_aplicacion = '{mes_filtro}' AND pa.quincena_aplicacion = '{quincena_filtro}'"
+    cond_p = f"pa.mes_aplicacion = '{mes_filtro}'"
     
-    if quincena_filtro == "1ra Quincena (1-15)":
+    if chk_1ra_r and chk_2da_r:
+        pass
+    elif chk_1ra_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-    elif quincena_filtro == "2da Quincena (16-31)":
+        cond_p += " AND pa.quincena_aplicacion = '1ra Quincena (1-15)'"
+    elif chk_2da_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
+        cond_p += " AND pa.quincena_aplicacion = '2da Quincena (16-31)'"
+    else:
+        cond_c += " AND 1=0"
+        cond_p += " AND 1=0"
         
     if tarjeta_filtro != "Todas":
         cond_c += f" AND t.nombre = '{tarjeta_filtro}'"
