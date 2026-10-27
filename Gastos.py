@@ -202,12 +202,15 @@ if mes_actual_str not in rango_meses:
     rango_meses = sorted(list(set(rango_meses)))
 idx_actual = rango_meses.index(mes_actual_str)
 
+def formato_mes(mes):
+    return f"{mes} (Mes Actual)" if mes == mes_actual_str else mes
+
 # --- 1. DASHBOARD ---
 if menu == "📊 Dashboard":
     with st.expander("🔍 Mostrar/Ocultar Filtros de Tiempo", expanded=False):
         c_f1, c_f2 = st.columns([1, 1.5])
         with c_f1:
-            mes_filtro = st.selectbox("Filtrar por Mes", rango_meses, index=idx_actual)
+            mes_filtro = st.selectbox("Filtrar por Mes", rango_meses, index=idx_actual, format_func=formato_mes)
         with c_f2:
             st.write("Filtrar por Quincena")
             cc1, cc2 = st.columns(2)
@@ -216,18 +219,17 @@ if menu == "📊 Dashboard":
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
 
-    # Corrección: Evaluación directa contra la asignación de pagos
     condicion_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
     condicion_p = f"pa.mes_aplicacion = '{mes_filtro}'"
     
     if chk_1ra and chk_2da:
-        pass # Pasan todos los de este mes
+        condicion_p += " AND pa.quincena_aplicacion IN ('1ra Quincena (1-15)', '2da Quincena (16-31)', 'Mes Completo')"
     elif chk_1ra:
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-        condicion_p += " AND pa.quincena_aplicacion = '1ra Quincena (1-15)'"
+        condicion_p += " AND pa.quincena_aplicacion IN ('1ra Quincena (1-15)', 'Mes Completo')"
     elif chk_2da:
         condicion_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
-        condicion_p += " AND pa.quincena_aplicacion = '2da Quincena (16-31)'"
+        condicion_p += " AND pa.quincena_aplicacion IN ('2da Quincena (16-31)', 'Mes Completo')"
     else:
         condicion_c += " AND 1=0"
         condicion_p += " AND 1=0"
@@ -478,7 +480,7 @@ elif menu == "💸 Liquidar Deuda":
             
             c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
             with c_f1: 
-                mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes")
+                mes_filtro_pago = st.selectbox("Mes a liquidar", rango_meses, index=idx_actual, key="pago_mes", format_func=formato_mes)
             with c_f2: 
                 st.write("Quincena a liquidar")
                 cc1, cc2 = st.columns(2)
@@ -521,7 +523,7 @@ elif menu == "💸 Liquidar Deuda":
                         "Pagar": st.column_config.CheckboxColumn("Pagar ✔️", default=False),
                         "compra_id": None, 
                         "tarjeta_id": None,
-                        "quincena_cargo": None, # Oculta la columna técnica
+                        "quincena_cargo": None, 
                         "Monto": st.column_config.NumberColumn("Monto ($)", format="$%.2f")
                     },
                     disabled=["Concepto", "Tarjeta", "Fecha Compra", "Monto"], 
@@ -539,7 +541,6 @@ elif menu == "💸 Liquidar Deuda":
                         cursor = conn.cursor()
                         fecha_pago = str(datetime.today().date()) 
                         
-                        # Magia: Agrupa por tarjeta y por quincena para asignar el pago exactamente donde pertenece
                         for (tarj_id, quin_cargo), group in seleccionados.groupby(["tarjeta_id", "quincena_cargo"]):
                             monto_tarjeta = group["Monto"].sum()
                             conceptos_pagados = ", ".join(group["Concepto"].tolist())
@@ -588,8 +589,23 @@ elif menu == "💸 Liquidar Deuda":
                 
                 st.write("**¿En qué reporte quieres que aparezca este pago?**")
                 c_a1, c_a2 = st.columns(2)
-                with c_a1: mes_ap = st.selectbox("Aplica para el Mes", rango_meses, index=idx_actual, key="ap_mes")
-                with c_a2: quin_ap = st.radio("Aplica para Quincena", ["1ra Quincena (1-15)", "2da Quincena (16-31)"], horizontal=True, key="ap_quin")
+                with c_a1: mes_ap = st.selectbox("Aplica para el Mes", rango_meses, index=idx_actual, key="ap_mes", format_func=formato_mes)
+                with c_a2: 
+                    st.write("Aplica para Quincena")
+                    ca1, ca2 = st.columns(2)
+                    chk_1_ab = ca1.checkbox("1ra Quincena", value=True, key="ab_chk_1")
+                    chk_2_ab = ca2.checkbox("2da Quincena", value=True, key="ab_chk_2")
+                
+                # Asignación inteligente para abono libre
+                if chk_1_ab and chk_2_ab:
+                    quin_ap = "Mes Completo"
+                elif chk_1_ab:
+                    quin_ap = "1ra Quincena (1-15)"
+                elif chk_2_ab:
+                    quin_ap = "2da Quincena (16-31)"
+                else:
+                    quin_ap = "Ninguna"
+
                 st.divider()
 
                 tipo_pago = st.radio("¿Cuánto va a abonar?", ["Liquidar deuda completa", "Abonar un monto específico"])
@@ -602,7 +618,9 @@ elif menu == "💸 Liquidar Deuda":
                 f_pago = st.date_input("Fecha real del depósito", datetime.today())
             
             if st.button("Registrar Abono", icon="✅", use_container_width=True, type="primary"):
-                if m_pago > 0:
+                if quin_ap == "Ninguna":
+                    st.error("⚠️ Debes seleccionar al menos una quincena para asignar el pago.")
+                elif m_pago > 0:
                     try:
                         conn = conectar_bd()
                         cursor = conn.cursor()
@@ -610,7 +628,7 @@ elif menu == "💸 Liquidar Deuda":
                                        (p_pago, t_pago, m_pago, str(f_pago), concepto_pago, mes_ap, quin_ap))
                         conn.commit()
                         st.cache_data.clear() 
-                        st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} asignado a {quin_ap} de {mes_ap}."
+                        st.session_state.mensaje_exito = f"Movimiento de ${m_pago:,.2f} asignado al reporte de {mes_ap}."
                     except Exception as e:
                         st.session_state.mensaje_error = f"Error al pagar: {e}"
                     finally:
@@ -620,7 +638,7 @@ elif menu == "💸 Liquidar Deuda":
                     st.error("⚠️ Por favor, ingresa un monto válido antes de continuar.")
 
         # ==========================================
-        # HISTORIAL DE PAGOS (Nuevo)
+        # HISTORIAL DE PAGOS
         # ==========================================
         st.divider()
         st.subheader(f"🕒 Historial de Pagos")
@@ -656,7 +674,9 @@ elif menu == "📝 Reportes":
         st.subheader("🔍 Filtros de Búsqueda")
         c_f1, c_f2, c_f3 = st.columns([1, 1.5, 1])
         with c_f1: 
-            mes_filtro = st.selectbox("Mes", rango_meses, index=idx_actual, key="rep_mes")
+            rango_meses_rep = ["Todos"] + rango_meses
+            idx_actual_rep = rango_meses_rep.index(mes_actual_str)
+            mes_filtro = st.selectbox("Mes", rango_meses_rep, index=idx_actual_rep, key="rep_mes", format_func=formato_mes)
         with c_f2: 
             st.write("Quincena")
             cc1, cc2 = st.columns(2)
@@ -667,17 +687,20 @@ elif menu == "📝 Reportes":
 
     calc_pago = "(DATE_TRUNC('month', c.fecha) + (CASE WHEN EXTRACT(DAY FROM c.fecha) > t.dia_corte THEN 1 ELSE 0 END + CASE WHEN t.dia_pago <= t.dia_corte THEN 1 ELSE 0 END) * INTERVAL '1 month' + (t.dia_pago - 1) * INTERVAL '1 day')::DATE"
     
-    cond_c = f"TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
-    cond_p = f"pa.mes_aplicacion = '{mes_filtro}'"
+    cond_c, cond_p = "1=1", "1=1"
     
+    if mes_filtro != "Todos":
+        cond_c += f" AND TO_CHAR({calc_pago}, 'YYYY-MM') = '{mes_filtro}'"
+        cond_p += f" AND pa.mes_aplicacion = '{mes_filtro}'"
+        
     if chk_1ra_r and chk_2da_r:
-        pass
+        pass 
     elif chk_1ra_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) <= 15"
-        cond_p += " AND pa.quincena_aplicacion = '1ra Quincena (1-15)'"
+        cond_p += " AND pa.quincena_aplicacion IN ('1ra Quincena (1-15)', 'Mes Completo')"
     elif chk_2da_r:
         cond_c += f" AND EXTRACT(DAY FROM {calc_pago}) > 15"
-        cond_p += " AND pa.quincena_aplicacion = '2da Quincena (16-31)'"
+        cond_p += " AND pa.quincena_aplicacion IN ('2da Quincena (16-31)', 'Mes Completo')"
     else:
         cond_c += " AND 1=0"
         cond_p += " AND 1=0"
@@ -717,6 +740,14 @@ elif menu == "📝 Reportes":
         tot_abonado = df_filtro[df_filtro['Tipo'] == '✅ Pago']['Monto'].sum()
         saldo_pendiente = tot_consumido - tot_abonado
         
+        # 🧠 UX/UI: Cálculo de Deuda Histórica Global para el Reporte
+        hist_df = consultar_datos(f"""
+            SELECT 
+                (SELECT COALESCE(SUM(monto_asignado), 0) FROM compra_participantes WHERE persona_id = (SELECT id FROM personas WHERE nombre = '{p_wa}')) as tot_comp, 
+                (SELECT COALESCE(SUM(monto), 0) FROM pagos WHERE persona_id = (SELECT id FROM personas WHERE nombre = '{p_wa}')) as tot_pag
+        """)
+        deuda_restante_global = hist_df['tot_comp'][0] - hist_df['tot_pag'][0]
+        
         tarjeta_msg = f" en la tarjeta {tarjeta_filtro}" if tarjeta_filtro != "Todas" else ""
         msg = f"Hola {p_wa}, este es tu estado de cuenta filtrado{tarjeta_msg}:\n\n"
         periodos = df_filtro[['Mes', 'Quincena']].drop_duplicates().sort_values(by=['Mes', 'Quincena'])
@@ -727,10 +758,20 @@ elif menu == "📝 Reportes":
                 msg += f"  {f['Tipo'].split(' ')[0]} {f['Concepto']} ({f['Tarjeta']}): {'-' if f['Tipo']=='✅ Pago' else ''}${f['Monto']:.2f}\n"
             msg += "\n"
         
-        msg += f"💰 *Total Consumido:* ${tot_consumido:.2f}\n💰 *Total Abonado:* ${tot_abonado:.2f}\n"
-        if saldo_pendiente > 0: msg += f"👉 *SALDO PENDIENTE: ${saldo_pendiente:.2f}*"
-        elif saldo_pendiente < 0: msg += f"✨ *SALDO A FAVOR: ${abs(saldo_pendiente):.2f}*"
-        else: msg += "✅ *CUENTA LIQUIDADA*"
+        msg += f"💰 *Total Consumido del periodo:* ${tot_consumido:.2f}\n💰 *Total Abonado del periodo:* ${tot_abonado:.2f}\n"
+        
+        if saldo_pendiente > 0: msg += f"👉 *Falta pagar del periodo: ${saldo_pendiente:.2f}*\n"
+        elif saldo_pendiente < 0: msg += f"✨ *Pagaste de más en este periodo: ${abs(saldo_pendiente):.2f}*\n"
+        else: msg += "✅ *Este periodo está totalmente liquidado*\n"
+        
+        # Agregamos la Inteligencia Financiera Global al mensaje
+        msg += f"\n🏦 *ESTADO GENERAL DE TU CUENTA*\n"
+        if deuda_restante_global > 0.01:
+            msg += f"🔴 *DEUDA TOTAL RESTANTE:* ${deuda_restante_global:,.2f}"
+        elif deuda_restante_global < -0.01:
+            msg += f"🟢 *SALDO GLOBAL A FAVOR:* ${abs(deuda_restante_global):,.2f}"
+        else:
+            msg += f"✅ *CUENTA GLOBAL LIQUIDADA*"
         
         st.divider()
         if st.button("Enviar Cobro al Grupo", icon="🚀", use_container_width=True, type="primary"):
